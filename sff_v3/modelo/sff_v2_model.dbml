@@ -1,0 +1,383 @@
+// SFF v2 — modelo de datos. Abrir en https://dbdiagram.io (Import > DBML)
+// Regenerar con: python generate_model.py <ruta_db>
+
+Table sff_backtest_pred {
+  fs_id_L2 varchar [note: 'FK']
+  tecnica varchar [note: 'FK']
+  h bigint
+  origen varchar
+  mes_objetivo varchar
+  pred float
+  real float
+  abs_err_pp float
+  process_date varchar
+  execution_id varchar
+  Note: 'El juez: tecnica x horizonte x origen.'
+}
+
+Table sff_backtest_pred_fu {
+  fu_key bigint [note: 'FK']
+  fs_id varchar
+  fs_id_L2 varchar
+  period varchar
+  h bigint
+  tecnica_id varchar
+  tasa_pred float
+  tasa_real_fu float
+  abs_err_pp float
+  err_usd float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_diag_dinamica {
+  fs_id_L2 varchar [pk]
+  meses bigint
+  n_pool float
+  cota_pp float
+  amp_estacional_pp float
+  pendiente_pp_ano float
+  gate varchar
+  sd_obs_pp float
+  sd_binom_pp float
+  phi float
+  process_date varchar
+  execution_id varchar
+  Note: 'Gate y phi por pool: hay motor o es la moneda.'
+}
+
+Table sff_dim_tecnica {
+  tecnica_id varchar [pk]
+  familia varchar
+  descripcion varchar
+  elegibilidad_min varchar
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_fact_fine {
+  period varchar
+  dataset_role varchar
+  total_tr_units bigint
+  total_tr_usd float
+  total_renewed_units float
+  total_renewed_usd float
+  is_current_month bigint
+  flag_time_series bigint
+  region varchar
+  product varchar
+  channel varchar
+  dormant bigint
+  softcancel bigint
+  no_instalado bigint
+  autorenew bigint
+  discount varchar
+  newcust bigint
+  fu_id varchar
+  comb_id varchar
+  fu_key bigint [note: 'FK']
+  comb_key bigint
+  fu_comb_key bigint [pk, note: 'FK']
+  period_date datetime
+  process_date varchar
+  execution_id varchar
+  Note: 'El ancla: el raw con claves. Todo dinero se suma aquí.'
+}
+
+Table sff_fact_fu {
+  region varchar
+  dormant bigint
+  softcancel bigint
+  no_instalado bigint
+  autorenew bigint
+  product varchar
+  channel varchar
+  period varchar
+  dataset_role varchar
+  is_current_month bigint
+  flag_time_series bigint
+  total_tr_units bigint
+  total_tr_usd float
+  total_renewed_units float
+  total_renewed_usd float
+  fu_id varchar
+  fu_key bigint [pk]
+  period_date datetime
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_fact_fu_gaps {
+  fu_key bigint
+  fu_id varchar
+  fs_id varchar
+  period varchar
+  dataset_role varchar
+  total_tr_units float
+  total_tr_usd float
+  total_renewed_units float
+  total_renewed_usd float
+  sintetica bigint
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_forecast_bands {
+  fu_key bigint [note: 'FK']
+  comb_key bigint
+  fs_id_L2 varchar
+  tecnica_id varchar [note: 'FK']
+  h bigint
+  banda_pp float
+  banda_usd float
+  esperado_usd float
+  banda_fallback bigint
+  process_date varchar
+  execution_id varchar
+  Note: 'La incertidumbre medida de cada fila del forecast.'
+}
+
+Table sff_forecast_detail {
+  fu_key bigint [note: 'FK']
+  comb_key bigint
+  fs_id varchar
+  period varchar
+  total_tr_usd float
+  tasa float
+  uplift float
+  esperado_usd float
+  etiqueta varchar
+  process_date varchar
+  execution_id varchar
+  Note: 'El forecast fila a fila.'
+}
+
+Table sff_forecast_pred_fu {
+  fu_key bigint [note: 'FK']
+  fs_id varchar
+  fs_id_L2 varchar
+  period varchar
+  h bigint
+  tecnica_id varchar
+  tasa_pred float
+  uplift_pred float
+  forecast_usd float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_forecast_seleccion {
+  fs_id_L2 varchar [pk, note: 'FK']
+  tecnica_elegida varchar [note: 'FK']
+  err_bt float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_fs_summary {
+  fs_id varchar
+  fs_key bigint [pk]
+  n_avg float
+  meses bigint
+  huecos bigint
+  ren float
+  pipe float
+  tasa_hist float
+  se_pp float
+  usd_proj float
+  moe_usd float
+  process_date varchar
+  execution_id varchar
+  Note: 'Salud de cada serie: soporte, huecos, moe en $.'
+}
+
+Table sff_fu_summary {
+  fu_key bigint [pk, note: 'FK']
+  fu_id varchar
+  period varchar
+  dataset_role varchar
+  is_current_month bigint
+  universo varchar
+  ruta varchar
+  total_tr_units bigint
+  total_tr_usd float
+  se_pp_max float
+  moe_pp_max float
+  moe_usd_max float
+  process_date varchar
+  execution_id varchar
+  Note: 'Referencia inmutable: error binomial peor caso por FU-mes.'
+}
+
+Table sff_horizon_report_series {
+  fs_id_L2 varchar [note: 'FK']
+  tecnica_elegida varchar
+  h bigint
+  n_predicciones bigint
+  err_pp_medio float
+  err_pp_p90 float
+  cobertura_cota_pct float
+  degradacion_pp float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_horizon_report_total {
+  h bigint
+  mes_proyectado varchar
+  esperado_usd float
+  banda_usd float
+  banda_pct float
+  err_pp_ponderado float
+  filas bigint
+  pct_banda_medida float
+  degradacion_vs_h1_pct float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_key_bridge {
+  fu_comb_key bigint [pk]
+  fu_id varchar
+  fu_key bigint
+  comb_id varchar
+  comb_key bigint
+  fs_id varchar
+  fs_key float [note: 'FK']
+  fs_id_L1 varchar
+  fs_id_L2 varchar [note: 'FK']
+  gu varchar
+  uplift_cell_key bigint [note: 'FK']
+  celda_id varchar
+  universo varchar
+  ruta varchar
+  process_date varchar
+  execution_id varchar
+  Note: 'El pegamento: de una fila del raw a todos sus linajes.'
+}
+
+Table sff_lookup_comb {
+  comb_id varchar
+  comb_key bigint [pk]
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_lookup_fu {
+  fu_id varchar
+  fu_key bigint [pk, note: 'FK']
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_parent_ladder {
+  fs_id varchar [note: 'FK']
+  peldano bigint
+  dims_colapsadas varchar
+  padre_id varchar
+  n_padre float
+  tasa_padre float
+  elegido bigint
+  process_date varchar
+  execution_id varchar
+  Note: 'Escalera de padres: peldanos y el elegido.'
+}
+
+Table sff_rolling_next_month {
+  fs_id_L2 varchar [note: 'FK']
+  mes_objetivo varchar
+  h bigint
+  tecnica_id varchar [note: 'FK']
+  tasa_pred float
+  tasa_real float
+  abs_err_pp float
+  err_units float
+  pipeline_units float
+  dentro_de_cota bigint
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_rolling_nm_resumen {
+  tecnica_id varchar
+  h bigint
+  wape_units_pct float
+  err_pp_ponderado float
+  cobertura_cota_pct float
+  n_predicciones float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_simpson_contrafactual {
+  celda varchar
+  mes varchar
+  err_plano_pp float
+  err_seg_pp float
+  ahorro_usd float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_support_chain {
+  fs_id varchar [note: 'FK']
+  fs_key bigint
+  etapa varchar
+  id_efectivo varchar
+  n_efectivo float
+  tasa float
+  se_pp float
+  usd_proj float
+  peldanos_padre bigint
+  moe_usd float
+  actuo bigint
+  process_date varchar
+  execution_id varchar
+  Note: 'Waterfall de reparacion: una fila por serie y etapa.'
+}
+
+Table sff_uplift_chain {
+  gu varchar
+  comb_id varchar
+  uplift_cell_key bigint
+  etapa varchar
+  uplift float
+  se float
+  n_ren float
+  process_date varchar
+  execution_id varchar
+}
+
+Table sff_validation_report {
+  check varchar
+  familia varchar
+  valor varchar
+  esperado varchar
+  estado varchar
+  detalle varchar
+  process_date varchar
+  execution_id varchar
+  Note: 'Auditoria de la ejecucion: 17 checks.'
+}
+
+Ref: sff_fact_fine.fu_comb_key > sff_key_bridge.fu_comb_key
+Ref: sff_fact_fine.fu_key > sff_fact_fu.fu_key
+Ref: sff_fu_summary.fu_key > sff_fact_fu.fu_key
+Ref: sff_key_bridge.fs_key > sff_fs_summary.fs_key
+Ref: sff_support_chain.fs_id > sff_fs_summary.fs_id
+Ref: sff_parent_ladder.fs_id > sff_fs_summary.fs_id
+Ref: sff_key_bridge.fs_id_L2 > sff_diag_dinamica.fs_id_L2
+Ref: sff_backtest_pred.fs_id_L2 > sff_diag_dinamica.fs_id_L2
+Ref: sff_rolling_next_month.fs_id_L2 > sff_diag_dinamica.fs_id_L2
+Ref: sff_horizon_report_series.fs_id_L2 > sff_diag_dinamica.fs_id_L2
+Ref: sff_forecast_seleccion.fs_id_L2 > sff_diag_dinamica.fs_id_L2
+Ref: sff_key_bridge.uplift_cell_key > sff_uplift_chain.uplift_cell_key
+Ref: sff_forecast_detail.fu_key > sff_fact_fu.fu_key
+Ref: sff_forecast_bands.fu_key > sff_fact_fu.fu_key
+Ref: sff_backtest_pred.tecnica > sff_dim_tecnica.tecnica_id
+Ref: sff_forecast_seleccion.tecnica_elegida > sff_dim_tecnica.tecnica_id
+Ref: sff_forecast_bands.tecnica_id > sff_dim_tecnica.tecnica_id
+Ref: sff_rolling_next_month.tecnica_id > sff_dim_tecnica.tecnica_id
+Ref: sff_backtest_pred_fu.fu_key > sff_fact_fu.fu_key
+Ref: sff_forecast_pred_fu.fu_key > sff_fact_fu.fu_key
+Ref: sff_lookup_fu.fu_key > sff_fact_fu.fu_key

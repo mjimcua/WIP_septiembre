@@ -1,0 +1,345 @@
+erDiagram
+  SFF_KEY_BRIDGE ||--o{ SFF_FACT_FINE : "fu_comb_key"
+  SFF_FACT_FU ||--o{ SFF_FACT_FINE : "fu_key"
+  SFF_FACT_FU ||--o{ SFF_FU_SUMMARY : "fu_key"
+  SFF_FS_SUMMARY ||--o{ SFF_KEY_BRIDGE : "fs_key"
+  SFF_FS_SUMMARY ||--o{ SFF_SUPPORT_CHAIN : "fs_id"
+  SFF_FS_SUMMARY ||--o{ SFF_PARENT_LADDER : "fs_id"
+  SFF_DIAG_DINAMICA ||--o{ SFF_KEY_BRIDGE : "fs_id_L2"
+  SFF_DIAG_DINAMICA ||--o{ SFF_BACKTEST_PRED : "fs_id_L2"
+  SFF_DIAG_DINAMICA ||--o{ SFF_ROLLING_NEXT_MONTH : "fs_id_L2"
+  SFF_DIAG_DINAMICA ||--o{ SFF_HORIZON_REPORT_SERIES : "fs_id_L2"
+  SFF_DIAG_DINAMICA ||--o{ SFF_FORECAST_SELECCION : "fs_id_L2"
+  SFF_UPLIFT_CHAIN ||--o{ SFF_KEY_BRIDGE : "uplift_cell_key"
+  SFF_FACT_FU ||--o{ SFF_FORECAST_DETAIL : "fu_key"
+  SFF_FACT_FU ||--o{ SFF_FORECAST_BANDS : "fu_key"
+  SFF_DIM_TECNICA ||--o{ SFF_BACKTEST_PRED : "tecnica"
+  SFF_DIM_TECNICA ||--o{ SFF_FORECAST_SELECCION : "tecnica_elegida"
+  SFF_DIM_TECNICA ||--o{ SFF_FORECAST_BANDS : "tecnica_id"
+  SFF_DIM_TECNICA ||--o{ SFF_ROLLING_NEXT_MONTH : "tecnica_id"
+  SFF_FACT_FU ||--o{ SFF_BACKTEST_PRED_FU : "fu_key"
+  SFF_FACT_FU ||--o{ SFF_FORECAST_PRED_FU : "fu_key"
+  SFF_FACT_FU ||--o{ SFF_LOOKUP_FU : "fu_key"
+  SFF_BACKTEST_PRED {
+    varchar fs_id_L2 FK
+    varchar tecnica FK
+    bigint h
+    varchar origen
+    varchar mes_objetivo
+    float pred
+    float real
+    float abs_err_pp
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_BACKTEST_PRED_FU {
+    bigint fu_key FK
+    varchar fs_id
+    varchar fs_id_L2
+    varchar period
+    bigint h
+    varchar tecnica_id
+    float tasa_pred
+    float tasa_real_fu
+    float abs_err_pp
+    float err_usd
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_DIAG_DINAMICA {
+    varchar fs_id_L2 PK
+    bigint meses
+    float n_pool
+    float cota_pp
+    float amp_estacional_pp
+    float pendiente_pp_ano
+    varchar gate
+    float sd_obs_pp
+    float sd_binom_pp
+    float phi
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_DIM_TECNICA {
+    varchar tecnica_id PK
+    varchar familia
+    varchar descripcion
+    varchar elegibilidad_min
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FACT_FINE {
+    varchar period
+    varchar dataset_role
+    bigint total_tr_units
+    float total_tr_usd
+    float total_renewed_units
+    float total_renewed_usd
+    bigint is_current_month
+    bigint flag_time_series
+    varchar region
+    varchar product
+    varchar channel
+    bigint dormant
+    bigint softcancel
+    bigint no_instalado
+    bigint autorenew
+    varchar discount
+    bigint newcust
+    varchar fu_id
+    varchar comb_id
+    bigint fu_key FK
+    bigint comb_key
+    bigint fu_comb_key PK
+    datetime period_date
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FACT_FU {
+    varchar region
+    bigint dormant
+    bigint softcancel
+    bigint no_instalado
+    bigint autorenew
+    varchar product
+    varchar channel
+    varchar period
+    varchar dataset_role
+    bigint is_current_month
+    bigint flag_time_series
+    bigint total_tr_units
+    float total_tr_usd
+    float total_renewed_units
+    float total_renewed_usd
+    varchar fu_id
+    bigint fu_key PK
+    datetime period_date
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FACT_FU_GAPS {
+    bigint fu_key
+    varchar fu_id
+    varchar fs_id
+    varchar period
+    varchar dataset_role
+    float total_tr_units
+    float total_tr_usd
+    float total_renewed_units
+    float total_renewed_usd
+    bigint sintetica
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FORECAST_BANDS {
+    bigint fu_key FK
+    bigint comb_key
+    varchar fs_id_L2
+    varchar tecnica_id FK
+    bigint h
+    float banda_pp
+    float banda_usd
+    float esperado_usd
+    bigint banda_fallback
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FORECAST_DETAIL {
+    bigint fu_key FK
+    bigint comb_key
+    varchar fs_id
+    varchar period
+    float total_tr_usd
+    float tasa
+    float uplift
+    float esperado_usd
+    varchar etiqueta
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FORECAST_PRED_FU {
+    bigint fu_key FK
+    varchar fs_id
+    varchar fs_id_L2
+    varchar period
+    bigint h
+    varchar tecnica_id
+    float tasa_pred
+    float uplift_pred
+    float forecast_usd
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FORECAST_SELECCION {
+    varchar fs_id_L2 PK
+    varchar tecnica_elegida FK
+    float err_bt
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FS_SUMMARY {
+    varchar fs_id
+    bigint fs_key PK
+    float n_avg
+    bigint meses
+    bigint huecos
+    float ren
+    float pipe
+    float tasa_hist
+    float se_pp
+    float usd_proj
+    float moe_usd
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_FU_SUMMARY {
+    bigint fu_key PK
+    varchar fu_id
+    varchar period
+    varchar dataset_role
+    bigint is_current_month
+    varchar universo
+    varchar ruta
+    bigint total_tr_units
+    float total_tr_usd
+    float se_pp_max
+    float moe_pp_max
+    float moe_usd_max
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_HORIZON_REPORT_SERIES {
+    varchar fs_id_L2 FK
+    varchar tecnica_elegida
+    bigint h
+    bigint n_predicciones
+    float err_pp_medio
+    float err_pp_p90
+    float cobertura_cota_pct
+    float degradacion_pp
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_HORIZON_REPORT_TOTAL {
+    bigint h
+    varchar mes_proyectado
+    float esperado_usd
+    float banda_usd
+    float banda_pct
+    float err_pp_ponderado
+    bigint filas
+    float pct_banda_medida
+    float degradacion_vs_h1_pct
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_KEY_BRIDGE {
+    bigint fu_comb_key PK
+    varchar fu_id
+    bigint fu_key
+    varchar comb_id
+    bigint comb_key
+    varchar fs_id
+    float fs_key FK
+    varchar fs_id_L1
+    varchar fs_id_L2 FK
+    varchar gu
+    bigint uplift_cell_key FK
+    varchar celda_id
+    varchar universo
+    varchar ruta
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_LOOKUP_COMB {
+    varchar comb_id
+    bigint comb_key PK
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_LOOKUP_FU {
+    varchar fu_id
+    bigint fu_key PK
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_PARENT_LADDER {
+    varchar fs_id FK
+    bigint peldano
+    varchar dims_colapsadas
+    varchar padre_id
+    float n_padre
+    float tasa_padre
+    bigint elegido
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_ROLLING_NEXT_MONTH {
+    varchar fs_id_L2 FK
+    varchar mes_objetivo
+    bigint h
+    varchar tecnica_id FK
+    float tasa_pred
+    float tasa_real
+    float abs_err_pp
+    float err_units
+    float pipeline_units
+    bigint dentro_de_cota
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_ROLLING_NM_RESUMEN {
+    varchar tecnica_id
+    bigint h
+    float wape_units_pct
+    float err_pp_ponderado
+    float cobertura_cota_pct
+    float n_predicciones
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_SIMPSON_CONTRAFACTUAL {
+    varchar celda
+    varchar mes
+    float err_plano_pp
+    float err_seg_pp
+    float ahorro_usd
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_SUPPORT_CHAIN {
+    varchar fs_id FK
+    bigint fs_key
+    varchar etapa
+    varchar id_efectivo
+    float n_efectivo
+    float tasa
+    float se_pp
+    float usd_proj
+    bigint peldanos_padre
+    float moe_usd
+    bigint actuo
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_UPLIFT_CHAIN {
+    varchar gu
+    varchar comb_id
+    bigint uplift_cell_key
+    varchar etapa
+    float uplift
+    float se
+    float n_ren
+    varchar process_date
+    varchar execution_id
+  }
+  SFF_VALIDATION_REPORT {
+    varchar check
+    varchar familia
+    varchar valor
+    varchar esperado
+    varchar estado
+    varchar detalle
+    varchar process_date
+    varchar execution_id
+  }
