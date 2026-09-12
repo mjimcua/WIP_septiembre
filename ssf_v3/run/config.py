@@ -25,11 +25,11 @@ This module is the single place where the framework learns four things:
 
 Numerical contract: this file is a verbose rewrite of legacy `config.py`. The style
 changed; the numbers did not. Any change in a key, an id, a column list or a written table
-must be caught by `tests/equivalence_gate.py` against the golden.
+must be caught by `tests/test_pipeline.py` against the reference output.
 
 Vocabulary: `extra_renovacion` / `extra_revalorizacion` are the doctrine names of the
 two extra groups (the word "covariates" is forbidden). Persisted column names and
-values stay in Spanish because they are the contract of the golden and of the BI.
+values stay in Spanish because they are the contract of the reference output and of the BI.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ MIN_ELAPSED_SECONDS = 0.01
 
 # Logical table name → physical suffix. The physical table is `sql_table_prefix` +
 # suffix (e.g. `sff_fu_summary`), unless `sql_table_names` overrides the logical name.
-# This registry is a datum of the contract: the golden and the BI expect these names.
+# This registry is a datum of the contract: the reference output and the BI expect these names.
 PHYSICAL_TABLE_NAMES = {
     "forecast_units_raw_summary": "fu_summary",
     "forecast_series_raw_summary": "fs_summary",

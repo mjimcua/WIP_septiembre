@@ -9,7 +9,7 @@ are decided by the Config the caller built.
 TRANSITIONAL WIRING. The refactor rewrites one phase per chat (DISENO_SPLIT §7). Until
 every phase lives in `run/` and `analysis/`, this module imports:
   · from `run/` and `analysis/`  the modules already rewritten (config, phase 0)
-  · from `sff_v3/`  the legacy modules not yet rewritten (the numerical reference)
+  · from `sff_v2/`  the legacy modules not yet rewritten (the numerical reference)
 `run/` goes FIRST on sys.path so `import config` resolves to `run/config.py` for every
 module, legacy phases included (they keep working through the legacy aliases). When a
 phase is rewritten, its import below moves from the legacy module to the `run/` module;
@@ -22,7 +22,8 @@ import sys
 
 RUN_FOLDER = os.path.dirname(os.path.abspath(__file__))
 REPOSITORY_ROOT = os.path.dirname(RUN_FOLDER)
-LEGACY_FOLDER = os.path.join(REPOSITORY_ROOT, "sff_v3")
+# the new tree lives in ssf_v3/; the legacy tree is its sibling sff_v2/
+LEGACY_FOLDER = os.path.join(os.path.dirname(REPOSITORY_ROOT), "sff_v2")
 ANALYSIS_FOLDER = os.path.join(REPOSITORY_ROOT, "analysis")
 sys.path.insert(0, LEGACY_FOLDER)
 sys.path.insert(0, ANALYSIS_FOLDER)

@@ -1,9 +1,9 @@
 """test_config.py — regression checks for `run/config.py` (SFF v2 · RUN).
 
 WHY THIS FILE EXISTS. The equivalence gate proves that the framework AS A WHOLE still
-produces the golden numbers. It does not prove that a bad taxonomy is rejected, that an
+produces the reference numbers. It does not prove that a bad taxonomy is rejected, that an
 id is built in the contractual field order, or that a business parameter still holds its
-sealed value: the error paths are never exercised by a healthy golden run, and a changed
+sealed value: the error paths are never exercised by a healthy run, and a changed
 parameter would surface as a confusing difference ten functions downstream. This file
 checks `config.py` directly, so that a regression fails HERE, with a sentence naming
 what broke, before it reaches the gate.
@@ -11,7 +11,7 @@ what broke, before it reaches the gate.
 HOW TO USE IT. Run it after every change to `run/config.py`, before the gate:
 
     python tests/test_config.py     →  exit 0 if healthy, 1 with the list of failures
-    python tests/eval_harness.py    →  the system-level gate (25/25 against the golden)
+    python tests/test_pipeline.py   →  the system-level run (25/25 against the reference)
 
 The two are complementary: this one is unit-level and fast, the gate is system-level and
 slow. A change that passes this file and fails the gate is a change in a PHASE; a change
@@ -20,7 +20,7 @@ that fails this file is a change in the CONTRACT.
 WHAT IS PINNED. Block 5 freezes the production defaults (the ten mandatory dimensions,
 the sealed business parameters, the physical table names). Those checks fail on purpose
 whenever a value changes: the failure is the reminder to declare the change in
-ASUNCIONES and to regenerate the golden, never a reason to edit the expected value
+ASUNCIONES and to regenerate the reference, never a reason to edit the expected value
 without that declaration.
 
 No external test runner is required, on purpose: it runs like `smoke_multidim.py`.
@@ -58,7 +58,7 @@ TEST_EXTRA_REVALORIZACION = ["discount"]
 EXPECTED_KEY_OF_SAMPLE_ID = 0xa7e319b2e18e
 
 # The production taxonomy and the sealed business parameters (block 5). A change in any
-# of these is a change of contract: it must be declared in ASUNCIONES and the golden
+# of these is a change of contract: it must be declared in ASUNCIONES and the reference
 # must be regenerated.
 EXPECTED_PRODUCTION_MANDATORY_DIMS = [
     "tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3",
@@ -71,7 +71,7 @@ EXPECTED_BUSINESS_PARAMETERS = {"support_floor": 30.0, "z": 1.645, "rate_cap": 0
                                 "k_cred": 60.0, "k_uplift": 24.0,
                                 "gap_rate_policy": "no_rate"}
 
-# Physical names the golden and the BI already depend on. Sampled, not exhaustive: the
+# Physical names the reference and the BI already depend on. Sampled, not exhaustive: the
 # full registry is checked for size and for prefixing.
 EXPECTED_PHYSICAL_NAMES = {"forecast_units_raw_summary": "sff_fu_summary",
                            "forecast_series_raw_summary": "sff_fs_summary",
@@ -81,9 +81,9 @@ EXPECTED_PHYSICAL_NAMES = {"forecast_units_raw_summary": "sff_fu_summary",
                            "fact_fine": "sff_fact_fine"}
 
 # Size of the physical-name registry. It holds 27 logical names, two more than the 25
-# tables of the golden: `simpson_showcase` and `simpson_showcase_series` are written by
-# the manual showcase search (ANALYSIS), which the golden run does not execute.
-# DISENO_SPLIT §5: the golden becomes 28 tables when the three decision tables arrive.
+# tables of the reference: `simpson_showcase` and `simpson_showcase_series` are written
+# by the manual showcase search (ANALYSIS), which the reference run does not execute.
+# DISENO_SPLIT §5: the reference becomes 28 tables when the three decision tables arrive.
 EXPECTED_REGISTRY_SIZE = 27
 TABLES_NOT_WRITTEN_BY_THE_GOLDEN_RUN = ["simpson_showcase", "simpson_showcase_series"]
 
@@ -620,7 +620,7 @@ def test_production_defaults() -> None:
     """`Config()` with no arguments is production: its values are the sealed contract.
 
     A failure here is not necessarily a bug: it is a CHANGE OF CONTRACT. Declare it in
-    ASUNCIONES, regenerate the golden, and only then update the expected value.
+    ASUNCIONES, regenerate the reference, and only then update the expected value.
     """
     RECORDER.start_block("BLOCK 5 · production defaults (pinned contract)")
 
@@ -658,7 +658,7 @@ def test_production_defaults() -> None:
 
 
 def test_physical_name_registry() -> None:
-    """The registry is the name contract of the golden and of the BI."""
+    """The registry is the name contract of the reference and of the BI."""
     RECORDER.start_block("BLOCK 5 · physical name registry (pinned contract)")
 
     production_configuration = Config()
@@ -672,14 +672,14 @@ def test_physical_name_registry() -> None:
                    f"the registry holds {EXPECTED_REGISTRY_SIZE} logical names "
                    f"(found {len(PHYSICAL_TABLE_NAMES)})")
 
-    # the registry is larger than the golden on purpose: the showcase tables are
-    # written only by the manual search, never by the golden run
+    # the registry is larger than the reference on purpose: the showcase tables are
+    # written only by the manual search, never by the reference run
     showcase_names_present = all(logical_name in PHYSICAL_TABLE_NAMES
                                  for logical_name in TABLES_NOT_WRITTEN_BY_THE_GOLDEN_RUN)
     RECORDER.check(showcase_names_present,
-                   "the registry also holds the two showcase tables, outside the golden run")
+                   "the registry also holds the two showcase tables, outside the reference run")
     RECORDER.check(len(PHYSICAL_TABLE_NAMES) - len(TABLES_NOT_WRITTEN_BY_THE_GOLDEN_RUN) == 25,
-                   "the remaining 25 logical names are the 25 tables of the golden")
+                   "the remaining 25 logical names are the 25 tables of the reference")
 
     # two logical names must never resolve to the same physical table: one would
     # silently overwrite the other on every run

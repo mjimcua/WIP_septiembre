@@ -1,6 +1,6 @@
 # GLOSARIO — términos del framework y su equivalente en español
 
-*SFF v2 · vivo desde el 12-sep-2026. Se amplía con cada término que el usuario pregunta. Complementa a DISENO_V2.md (doctrina) y POR_QUE_ESTE_FORECAST.md (motivación). Cada entrada: qué es, cómo pensarlo en español, dónde vive en las tablas o en el código, ejemplo con la configuración del golden (`mandatory=[region]`, `timevarying=[dormant, softcancel, no_instalado, autorenew]`, `extra_renovacion=[product, channel]`, `extra_revalorizacion=[discount, newcust]`).*
+*SFF v2 · vivo desde el 12-sep-2026. Se amplía con cada término que el usuario pregunta. Complementa a DISENO_V2.md (doctrina) y POR_QUE_ESTE_FORECAST.md (motivación). Cada entrada: qué es, cómo pensarlo en español, dónde vive en las tablas o en el código, ejemplo con la configuración de pruebas (`mandatory=[region]`, `timevarying=[dormant, softcancel, no_instalado, autorenew]`, `extra_renovacion=[product, channel]`, `extra_revalorizacion=[discount, newcust]`).*
 
 *Convención: los nombres de columnas y valores persistidos siguen en español (`celda`, `gu`, `tasa`, `etapa`…); los identificadores de código en inglés. Cuando un término tiene dos nombres, se dan ambos.*
 
@@ -119,7 +119,7 @@ Por orden de coste de información. Se aplican solo a series por debajo del suel
 
 ### Test de caracterización (vs TDD)
 - **TDD**: test primero, código después; el test dirige el diseño.
-- **Caracterización / regresión** (lo que hace `tests/test_config.py`): el código ya existe; el test fija su comportamiento para que un cambio futuro que lo rompa falle con una frase que diga qué se rompió. Es lo adecuado para un refactor. La puerta de equivalencia es lo mismo a nivel de sistema (golden test). Orden de uso: test de unidad primero, puerta después. Falla el test → contrato roto; pasa el test y falla la puerta → fase rota.
+- **Caracterización / regresión** (lo que hace `tests/test_config.py`): el código ya existe; el test fija su comportamiento para que un cambio futuro que lo rompa falle con una frase que diga qué se rompió. Es lo adecuado para un refactor. La comparación con la referencia (`tests/test_pipeline.py`) es lo mismo a nivel de sistema. Orden de uso: test de unidad primero, pipeline después. Falla el test → contrato roto; pasa el test y falla el pipeline → fase rota. La referencia es temporal: desaparece al cerrar la primera versión definitiva.
 
 ---
 
