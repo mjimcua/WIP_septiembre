@@ -1,0 +1,116 @@
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 0 — raw data validation
+[0.1] contract ✓ 17 columns declared · 843 rows
+[0.1] current month ['2026-09'] → PROJECTION (17 rows reassigned): it is the FIRST month to project, never test
+[0.1] projection cleansing: 17 rows carried early results — wiped 337 renewed units / $10,406 (reacquisitions included in the wipe)
+[0.1] roles after conditioning {'train': 639, 'test': 134, 'projection': 70} · from here on, THIS is the raw
+[0.2] fine 843 rows → forecast units 747 · pipeline conserved ✓ ($2,323,980)
+[0.2] lookups: 747 forecast units · 2 combinations
+[0.3] routes per series: {'trainable': 15, 'heuristic': 1, 'no_impact': 1} — no_impact is labeled, never dropped (P4)
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 1 — rate series, dimensions, support ladder
+[1.1] 17 series · synthetic gap rows 11 (rate undefined) · 10 trainable series below the floor carry $15,840 of $193,980 projected
+[1.2] dimension separation (neutral series, weights = support):
+   region                     η²=0.170  unique=0.052  ω²=0.028  
+   product                    η²=0.605  unique=0.483  ω²=0.506  (annullable)
+   channel                    η²=0.013  unique=0.000  ω²=0.000  (annullable)
+[1.2] Simpson counterfactual: saving of the segmented method $12,992 over 12 walk-forward months · segmented wins in 62% of cell-months
+[1.2] mix-shift: 8% of the month-to-month movement of cell rates is composition, not behaviour
+[1.3] ladder: collapse order ['region'] · annullable extra 'channel' · 80% of trainable series reached the floor · median rung 1
+[1.3] money by risk level · 1_soporte
+   A_propio                  5 series  $     175,440   90.4%  error ±3.2 pp
+   B_prestado                7 series  $       8,640    4.5%  error ±14.6 pp
+   D_sin_historia            1 series  $       2,700    1.4%  error ±0.0 pp
+   M_signo_mixto             1 series  $         480    0.2%  error ±34.5 pp
+   N_sin_impacto             1 series  $           0    0.0%  error ±12.8 pp
+   S_signo_bajo_suelo        1 series  $         720    0.4%  error ±12.6 pp
+   T_universo_ts             1 series  $       6,000    3.1%  error ±0.0 pp
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 2 — dynamics
+[2] dynamics on 12 estimation ids · gates {'apto_promedio': 7, 'soporte': 3, 'estacional': 2} · phi median 1.72 · 7 with an engine (phi > 1.5)
+   EU|0|0|0|0|A|web             estacional phi=5.11  amp=11.7pp slope=-0.25pp/yr  cycles=3
+   EU|SIG=neutral|A|*           estacional phi=5.21  amp=11.7pp slope=-0.2pp/yr  cycles=3
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 3 — backtest, technique, bands
+[3] backtest: 42,480 predictions · 12 estimation ids · 36 target months · horizons [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+[3] leaderboard (mean |error| in binomial units; 1.0 = one sampling error):
+   T7_seasonal_idx       1.15   mean + additive seasonal index (logit)
+   T6_same_month         1.15   mean of the same calendar month
+   T11_holt_winters      1.25   Holt-Winters additive on logit, damped
+   T12_theta             1.40   Theta: damped trend + SES
+   T4_ewma               1.46   exponentially weighted mean, half-life 3
+   T9_ses                1.47   simple exponential smoothing
+   T3_ma6                1.49   moving average, 6 months
+   T3_ma3                1.54   moving average, 3 months
+   T14_temporal_cred     1.54   recent window with temporal credibility
+   T2_mean               1.63   mean of the whole history (challenger)
+   T0_naive              1.67   last observed month
+[3] champions: {'T2_mean': 8, 'T7_seasonal_idx': 2, 'T12_theta': 2} · 33% beat the challenger
+[3] HOLD-OUT (months ≥ 2026-01): chosen technique per id
+   h=1: mean |error| 4.51 pp · 95% inside their band · 86 predictions
+   h=2: mean |error| 4.50 pp · 95% inside their band · 86 predictions
+   h=3: mean |error| 4.57 pp · 100% inside their band · 86 predictions
+   h=4: mean |error| 4.59 pp · 99% inside their band · 86 predictions
+   h=5: mean |error| 4.66 pp · 100% inside their band · 86 predictions
+   h=6: mean |error| 4.83 pp · 100% inside their band · 86 predictions
+   h=7: mean |error| 4.95 pp · 98% inside their band · 86 predictions
+   h=8: mean |error| 5.05 pp · 98% inside their band · 86 predictions
+   h=9: mean |error| 5.05 pp · 99% inside their band · 86 predictions
+   h=10: mean |error| 5.05 pp · 98% inside their band · 86 predictions
+   h=11: mean |error| 5.23 pp · 98% inside their band · 86 predictions
+   h=12: mean |error| 5.48 pp · 98% inside their band · 86 predictions
+   h=13: mean |error| 5.54 pp · 98% inside their band · 86 predictions
+   h=14: mean |error| 5.56 pp · 98% inside their band · 86 predictions
+   h=15: mean |error| 5.66 pp · 97% inside their band · 86 predictions
+   h=16: mean |error| 6.00 pp · 95% inside their band · 86 predictions
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 4 — uplift
+[4] uplift: 3 cells · range [1.03, 1.50] · 0 cells below the floor ({'propia': 3}) · 0 clipped at the cap 3.0
+══════════════════════════════════════════════════════════════════════════ 
+PHASE 5 — assembly, extended horizon, bands
+[5] extended horizon 2027-01 → 2027-12: 196 simulated rows · acquisition factor global 1.429 (per-series for 16 series) · re-entry after 12 months
+[5] forecast: $548,448 over 16 months · rate origin {'celda': 2.4, 'serie': 97.6} · technique origin {'campeon': 57.2, 'default': 2.4, 'retador': 40.4}
+[5] month · expected · band (asymmetric) · % from simulated pipeline
+   2026-09  $     34,290    -4.8% /  +4.7%  simulated   0.0%  
+   2026-10  $     34,811    -4.8% /  +4.7%  simulated   0.0%  
+   2026-11  $     33,709    -4.9% /  +4.9%  simulated   0.0%  
+   2026-12  $     34,940    -4.7% /  +4.8%  simulated   0.0%  
+   2027-01  $     34,409    -4.7% /  +4.8%  simulated 100.0%  
+   2027-02  $     36,635    -4.7% /  +4.8%  simulated 100.0%  
+   2027-03  $     34,198    -4.8% /  +5.0%  simulated 100.0%  
+   2027-04  $     36,649    -4.6% /  +5.0%  simulated 100.0%  
+   2027-05  $     35,696    -4.9% /  +5.2%  simulated 100.0%  
+   2027-06  $     35,112    -4.8% /  +5.2%  simulated 100.0%  
+   2027-07  $     31,789    -5.1% /  +5.4%  simulated 100.0%  
+   2027-08  $     33,533    -5.1% /  +5.5%  simulated 100.0%  
+   2027-09  $     33,421    -5.3% /  +5.8%  simulated 100.0%  
+   2027-10  $     33,384    -5.7% /  +5.8%  simulated 100.0%  
+   2027-11  $     32,331    -6.2% /  +5.8%  simulated 100.0%  
+   2027-12  $     33,541    -6.1% /  +5.8%  simulated 100.0%  
+══════════════════════════════════════════════════════════════════════════
+VALIDATION PANEL
+  ✓ [INTEGRITY] pipeline USD conserved fine ↔ units                     0.0   (= 0)
+  ✓ [INTEGRITY] fu_id unique in forecast units                            0   (= 0)
+  ✓ [INTEGRITY] fu_key unique (no hash collision)                         0   (= 0)
+  ✓ [INTEGRITY] raw → key_bridge coverage                            100.0%   (= 100%)
+  ✓ [INTEGRITY] fu_comb_key unique in the bridge                          0   (= 0)
+  ✓ [DOCTRINE ] projection rows carry no results                          0   (= 0)
+  ✓ [DOCTRINE ] current month is projection                               0   (= 0)
+  ✓ [DOCTRINE ] forecast without NaN                                      0   (= 0)
+  ✓ [DOCTRINE ] rate under the cap                                        0   (= 0)
+  ✓ [DOCTRINE ] uplift positive                                           0   (= 0)
+  • [QUALITY  ] $ forecast with its own series rate                     98%   (informational)
+  ✓ [QUALITY  ] $ falling to the global mean                           0.0%   (≈ 0%)
+  • [QUALITY  ] $ forecast with a champion technique                    57%   (informational)
+  • [QUALITY  ] $ built on simulated pipeline                           75%   (informational)
+  ✓ [QUALITY  ] rows with a measured band                               94%   (→ 100%)
+  ✓ [QUALITY  ] total band narrowing with the horizon (mix)               0   (= 0 months beyond tolerance)
+  • [QUALITY  ] mixed-sign series                                  1 ($480)   (≈ 0)
+  • [QUALITY  ] signed series under the floor                      1 ($720)   (informational)
+  ✓ [DOCTRINE ] signed series never climb above their cell                0   (= 0)
+  ✓ [DOCTRINE ] neutral series never pooled with a sign                   0   (= 0)
+  ✓ [QUALITY  ] hold-out calibration (inside band)                      98%   (≈ 90%)
+  • [QUALITY  ] hold-out mean |error| at h=1                        4.51 pp   (informational)
+  ✓ [QUALITY  ] uplift in plausible range                                 0   (= 0 cells outside [0.3, 3.0])
+══════════════════════════════════════════════════════════════════════════ 
+✓ analysis complete · decisions and tables in /tmp/v3run
