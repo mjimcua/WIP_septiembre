@@ -197,37 +197,49 @@ def dial_bucket(support: float, thresholds: tuple) -> str:
 
 def series_completeness(units: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """One row per series: months, gaps, birth/death inside the history, support, dial
-    bucket, combinations per unit, extreme months, unit ↔ combination consistency."""
+    bucket, combinations per unit, extreme months, unit ↔ combination consistency.
+    NOTE: vectorized (one groupby per measure); the per-series loop took minutes on 10k series."""
     period, role = configuration.period_col, configuration.dataset_role_col
     pipe_u, pipe_usd, ren_u = configuration.pipeline_units_col, configuration.pipeline_usd_col, configuration.renewed_units_col
-    history = units[(units[role] != PROJECTION_ROLE) & (units.get("sintetica", 0) == 0)]
+    real = units[units.get("sintetica", 0) == 0] if "sintetica" in units.columns else units
+    history = real[real[role] != PROJECTION_ROLE].copy()
+    if history.empty:
+        return pd.DataFrame(columns=["fs_id"])
     first_month, last_month = history[period].min(), history[period].max()
     thresholds = tuple(round(support_for_half_width(w, configuration.z)) for w in DIAL_HALF_WIDTHS_PP)
+    # months, span, support
+    grouped = history.groupby("fs_id")
+    profile = grouped.agg(primer_mes=(period, "min"), ultimo_mes=(period, "max"), meses=(period, "nunique")).reset_index()
+    profile["huecos"] = [(last - first).n + 1 - months for first, last, months in zip(profile["primer_mes"], profile["ultimo_mes"], profile["meses"])]
+    profile["nace_dentro"] = (profile["primer_mes"] > first_month).astype(int)
+    profile["muere_dentro"] = (profile["ultimo_mes"] < last_month).astype(int)
+    support = history[history[pipe_u] > 0].groupby("fs_id")[pipe_u].median()
+    profile["n_mediana"] = profile["fs_id"].map(support).fillna(0.0).round(1)
+    profile["tramo_dial"] = profile["n_mediana"].map(lambda n: dial_bucket(n, thresholds))
+    projected = real[real[role] == PROJECTION_ROLE].groupby("fs_id")[pipe_usd].sum()
+    profile["usd_proyectado"] = profile["fs_id"].map(projected).fillna(0.0).round(2)
+    # combinations per unit
     combos = fine_table[fine_table[role] != PROJECTION_ROLE].groupby("fu_id").agg(
         combinaciones=("comb_id", "nunique"), usd_fina=(pipe_usd, "sum"), mayor=(pipe_usd, "max"))
     combos["peso_mayor"] = combos["mayor"] / combos["usd_fina"].replace(0, np.nan)
-    rows = []
-    for series_id, block in history.groupby("fs_id"):
-        months = pd.PeriodIndex(sorted(block[period].unique()), freq="M")
-        expected = len(pd.period_range(months.min(), months.max(), freq="M"))
-        support = float(block.loc[block[pipe_u] > 0, pipe_u].median()) if (block[pipe_u] > 0).any() else 0.0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            rate = block[ren_u] / block[pipe_u].replace(0, np.nan)
-        small = block[pipe_u] < SMALL_PIPELINE_FOR_EXTREME_MONTH
-        unit_combos = combos.reindex(block["fu_id"])
-        checked = block.merge(combos[["usd_fina"]], left_on="fu_id", right_index=True, how="left")
-        mismatch = int((abs(checked[pipe_usd] - checked["usd_fina"].fillna(0)) > 1e-6).sum())
-        projected = units[(units["fs_id"] == series_id) & (units[role] == PROJECTION_ROLE)][pipe_usd].sum()
-        rows.append(dict(fs_id=series_id, primer_mes=str(months.min()), ultimo_mes=str(months.max()), meses=len(months),
-                         huecos=expected - len(months), nace_dentro=int(months.min() > first_month),
-                         muere_dentro=int(months.max() < last_month), n_mediana=round(support, 1),
-                         tramo_dial=dial_bucket(support, thresholds), usd_proyectado=round(float(projected), 2),
-                         combinaciones_mediana=float(unit_combos["combinaciones"].median()) if unit_combos["combinaciones"].notna().any() else np.nan,
-                         combinaciones_max=int(unit_combos["combinaciones"].max()) if unit_combos["combinaciones"].notna().any() else 0,
-                         peso_combo_mayor=round(float(unit_combos["peso_mayor"].median()), 3) if unit_combos["peso_mayor"].notna().any() else np.nan,
-                         meses_0pct=int(((rate == 0) & small).sum()), meses_100pct=int(((rate == 1) & small).sum()),
-                         unidades_descuadradas=mismatch))
-    return pd.DataFrame(rows)
+    per_unit = history[["fs_id", "fu_id", pipe_usd, pipe_u, ren_u]].merge(combos, left_on="fu_id", right_index=True, how="left")
+    by_series = per_unit.groupby("fs_id")
+    profile["combinaciones_mediana"] = profile["fs_id"].map(by_series["combinaciones"].median())
+    profile["combinaciones_max"] = profile["fs_id"].map(by_series["combinaciones"].max()).fillna(0).astype(int)
+    profile["peso_combo_mayor"] = profile["fs_id"].map(by_series["peso_mayor"].median()).round(3)
+    # extreme months on a small pipeline
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rate = per_unit[ren_u] / per_unit[pipe_u].replace(0, np.nan)
+    small = per_unit[pipe_u] < SMALL_PIPELINE_FOR_EXTREME_MONTH
+    per_unit["zero"] = ((rate == 0) & small).astype(int)
+    per_unit["full"] = ((rate == 1) & small).astype(int)
+    per_unit["mismatch"] = ((per_unit[pipe_usd] - per_unit["usd_fina"].fillna(0)).abs() > 1e-6).astype(int)
+    extremes = per_unit.groupby("fs_id")[["zero", "full", "mismatch"]].sum()
+    profile["meses_0pct"] = profile["fs_id"].map(extremes["zero"]).fillna(0).astype(int)
+    profile["meses_100pct"] = profile["fs_id"].map(extremes["full"]).fillna(0).astype(int)
+    profile["unidades_descuadradas"] = profile["fs_id"].map(extremes["mismatch"]).fillna(0).astype(int)
+    profile["primer_mes"], profile["ultimo_mes"] = profile["primer_mes"].astype(str), profile["ultimo_mes"].astype(str)
+    return profile
 
 
 def dial_buckets(profile: pd.DataFrame) -> pd.DataFrame:
