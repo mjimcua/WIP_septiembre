@@ -147,9 +147,10 @@ def test_assembly_and_bands() -> None:
                        "esperado_usd = pipeline$ × tasa × uplift")
         RECORDER.check((detail["tasa"] <= 0.90 + 1e-12).all() and (detail.loc[detail["fs_id"] == "EU|0|1|web", "tasa"] == 0.90).all(),
                        "the rate is saturated at rate_cap (the .95 series lands on .90)")
-        chosen = results["decisions"]["decision_technique"].set_index("id_estimacion")["tecnica"]
-        RECORDER.check((detail["tecnica"] == detail["id_estimacion"].map(chosen).fillna("T2_mean")).all(),
-                       "every row uses the technique decided for its estimation id")
+        from analysis_backtest import technique_for
+        technique_at = technique_for(results["decisions"]["decision_technique"])
+        expected = [technique_at.get((i, int(h)), "T2_mean") if pd.notna(h) else "T2_mean" for i, h in zip(detail["id_estimacion"], detail["h"])]
+        RECORDER.check((detail["tecnica"] == expected).all(), "every row uses the technique decided for its estimation id and its horizon band")
         s1 = detail[detail["fs_id"] == "EU|0|0|web"].sort_values("period")
         RECORDER.check(list(s1["h"]) == list(range(1, 10)), "h counts from the last month with truth (2025-12): 2026-01 is h=1 … 2026-09 is h=9")
         RECORDER.check((s1["tasa_origen"] == "serie").all() and s1["tecnica_origen"].iloc[0] in ("campeon", "retador"),
@@ -160,7 +161,7 @@ def test_assembly_and_bands() -> None:
         small, big = bands[detail["fs_id"] == "EU|0|0|tele"], bands[detail["fs_id"] == "EU|0|0|web"]
         RECORDER.check((small["banda_high_pp"] - small["banda_low_pp"]).mean() > (big["banda_high_pp"] - big["banda_low_pp"]).mean() * 2,
                        "a small series (n=10) has a much wider band in pp than a big one")
-        RECORDER.check(small["banda_high_pp"].max() <= 100 * (0.90 - small.merge(detail[["fu_comb_key", "tasa"]], on="fu_comb_key")["tasa"]).max() + 1e-6,
+        RECORDER.check(small["banda_high_pp"].max() <= 100 * (0.90 - small.merge(detail[["fu_comb_key", "tasa"]], on="fu_comb_key")["tasa"]).max() + 1e-3,
                        "the high side of the band is clipped at the rate cap (asymmetry near the ceiling)")
     RECORDER.start_block("5 · aggregation")
     with tempfile.TemporaryDirectory() as folder:

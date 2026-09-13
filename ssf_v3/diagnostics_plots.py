@@ -240,6 +240,8 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
     d = dynamics.iloc[0] if len(dynamics) else pd.Series(dtype=object)
     technique = read_table("decision_technique", configuration, results)
     technique = technique[technique["id_estimacion"] == row["id_estimacion"]]
+    if len(technique) and "tramo_h" in technique.columns:
+        technique = technique.sort_values("h_min")
     t = technique.iloc[0] if len(technique) else pd.Series(dtype=object)
     holdout = read_table("backtest_holdout", configuration, results)
     holdout = holdout[(holdout["id_estimacion"] == row["id_estimacion"]) & (holdout["h"] == 1)].sort_values("mes_objetivo") if len(holdout) else holdout
@@ -346,7 +348,7 @@ def sheet_summary(row: pd.Series, d: pd.Series, t: pd.Series, holdout: pd.DataFr
         f"VOLUME {volume}",
     ]
     if len(t):
-        lines.append(f"TECHN. {t['tecnica']} ({t['tecnica_origen']}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units · challenger at {t['retador_err_norm']}"
+        lines.append(f"TECHN. {t['tecnica']} ({t['tecnica_origen']}, band {t.get('tramo_h', '-')}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units · challenger at {t['retador_err_norm']}"
                      + (f" · hold-out h=1 |error| {holdout['err_pp'].abs().mean():.1f} pp, bias {holdout['err_pp'].mean():+.1f} pp, {holdout['dentro_banda'].mean():.0%} in band" if len(holdout) else ""))
     return "\n".join(lines)
 
@@ -464,3 +466,48 @@ def guess_game(series_id: str, months_hidden: int = 6, configuration: Config = N
         paths.append(path)
     print(f"[game] {series_id}: {paths[0]} / {paths[1]}")
     return tuple(paths)
+
+
+def technique_error_by_horizon(key, configuration: Config = None, results: dict = None, output_folder: str = None) -> str:
+    """ONE figure: mean |error| (binomial units) by horizon, one line per technique, for
+    the pool a key points at. The champion of each band is marked. This is where "simple
+    wins near, shape wins far" (or not) becomes visible."""
+    from sheet import resolve_key
+    keys = resolve_key(key, configuration, results)
+    estimation_id = keys["id_estimacion"]
+    predictions = read_table("backtest_predictions", configuration, results)
+    block = predictions[predictions["id_estimacion"] == estimation_id]
+    if block.empty:
+        raise KeyError(f"no backtest predictions for {estimation_id} (under the floor, or backtest not run)")
+    decision = read_table("decision_technique", configuration, results)
+    decision = decision[decision["id_estimacion"] == estimation_id]
+    table = block.assign(abs_norm=block["err_norm"].abs()).groupby(["tecnica_id", "h"])["abs_norm"].mean().unstack("h")
+    counts = block.groupby(["tecnica_id", "h"]).size().unstack("h")
+    figure, axis = plt.subplots(figsize=(FIGURE_WIDTH, 6.5))
+    order = table.mean(axis=1).sort_values().index
+    for index, technique_id in enumerate(order):
+        row = table.loc[technique_id].dropna()
+        judged_everywhere = counts.loc[technique_id].reindex(row.index).fillna(0) > 0
+        style = "-" if len(row) >= 3 else "--"
+        axis.plot(row.index, row.values, style, marker="o", markersize=5, linewidth=2.2 if index < 4 else 1.4,
+                  color=PALETTE[index % len(PALETTE)], alpha=1.0 if index < 6 else 0.6, label=technique_id)
+    for _, band in decision.iterrows():
+        h_lo, h_hi = int(band["h_min"]), int(min(band["h_max"], table.columns.max()))
+        axis.axvspan(h_lo - 0.4, h_hi + 0.4, alpha=0.06, color="grey")
+        axis.text((h_lo + h_hi) / 2, axis.get_ylim()[1] * 0.97 if axis.get_ylim()[1] > 0 else 1, f"{band['tramo_h']}: {band['tecnica']}\n({band['tecnica_origen']})",
+                  ha="center", va="top", fontsize=9)
+    axis.axhline(1.0, color="black", linewidth=0.8, linestyle=":", label="1.0 = one sampling error (the floor)")
+    axis.set_xlabel("horizon h (months ahead)", fontsize=12)
+    axis.set_ylabel("mean |error| in binomial units", fontsize=12)
+    axis.set_xticks(sorted(table.columns))
+    axis.set_title(f"{estimation_id[:70]} · backtest error by horizon and technique (n≈{block['n_real'].median():.0f}/month)", fontsize=13, loc="left")
+    axis.legend(fontsize=8, ncol=2, framealpha=0.9)
+    figure.tight_layout()
+    folder = output_folder or os.path.join(configuration.outdir if configuration else ".", "diagnostics")
+    os.makedirs(folder, exist_ok=True)
+    safe = "".join(c if c.isalnum() else "_" for c in estimation_id)[:70]
+    path = os.path.join(folder, f"horizon_{safe}.png")
+    figure.savefig(path, dpi=110)
+    plt.close(figure)
+    print(f"[diag] error by horizon of {estimation_id}: {path}")
+    return path

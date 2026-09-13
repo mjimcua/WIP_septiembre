@@ -76,7 +76,8 @@ def test_analysis_taxonomy_1() -> dict:
     dynamics = results["decisions"]["decision_dynamics"].set_index("id_estimacion")
     RECORDER.check(dynamics.loc["EU|0|0|0|0|A|web", "gate"] == "estacional" and dynamics.loc["EU|0|0|0|0|A|web", "phi"] > 3,
                    "EU|A is seasonal with an engine (φ > 3)")
-    technique = results["decisions"]["decision_technique"].set_index("id_estimacion")
+    technique = results["decisions"]["decision_technique"]
+    technique = technique[technique["tramo_h"] == "corto"].set_index("id_estimacion")
     RECORDER.check(technique.loc["EU|0|0|0|0|A|web", "tecnica_origen"] == "campeon" and technique.loc["NA|0|0|0|0|A|web", "tecnica"] == "T2_mean",
                    "a champion on the seasonal series; the challenger on a flat one")
     decomposition = results["dimensions"]["mix_shift_decomposition"]

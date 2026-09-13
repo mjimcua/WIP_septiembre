@@ -91,6 +91,27 @@ vamos a predecir sigue muestreando con el n de la serie. Prestar soporte mejora 
 
 ---
 
+## 3b · Forma del pool, nivel de la serie
+
+**Problema.** Una serie que presta toma su técnica (estación, tendencia) del pool: ella
+sola no tiene con qué medirlas. Pero su nivel puede ser distinto del pool (renueva 5
+puntos peor que su familia) y la credibilidad ya nos dijo cuánto creernos esa
+diferencia (z).
+
+**Cálculo.** En logit: `tasa(h) = pool(h) + z · (nivel propio − nivel del pool)`. El pool
+pone la forma mes a mes; la serie pone su desviación, ponderada.
+
+**Ejemplo.** Pool DACH·Front Line: 2.400 clientes, nivel 78 %, estacional: abril 84 %,
+noviembre 72 %. Serie X dentro del pool: 120 clientes, nivel propio 73 %, z = 0,67.
+Desviación aplicada: 0,67 × (73 − 78) = −3,4 puntos. Abril: 84 − 3,4 ≈ 80,6 %; noviembre:
+72 − 3,4 ≈ 68,6 %. Con z → 0 (serie minúscula o hermanas iguales) X recibiría 84/72; con
+z → 1, 79/67. Sin este paso, X recibía el 84/72 del pool aunque supiéramos que renueva
+peor. `forecast_detail.tasa_pool_h` y `desviacion_propia_pp` guardan las dos partes.
+
+**Dónde.** `run_forecast_assembly.py` (`assemble_forecast`).
+
+---
+
 ## 4 · η², contribución única y el orden de colapso
 
 **Problema.** ¿Qué dimensiones separan la tasa? ¿En qué orden puede una serie pequeña
@@ -199,6 +220,13 @@ la misma escala: 1,0 = un error de muestreo, el suelo teórico.
 
 **Dos etapas.** Cribado de todas las técnicas en h = {1, 3, 6} → campeón; luego solo
 campeón y retador en todos los horizontes → bandas. Cuesta un tercio que juzgarlo todo.
+
+**Un campeón por tramo de horizonte.** Una técnica que acierta el mes que viene no
+tiene por qué saber nada de enero a doce meses vista: se elige un campeón para el tramo
+corto (h 1-3), otro para el medio (4-6) y otro para el largo (7+), cada uno con los
+horizontes de cribado que caen en su tramo. La figura `technique_error_by_horizon` lo
+enseña: la media de 3 meses gana a la izquierda y pierde a la derecha frente a una
+técnica con forma, o no, y entonces se sabe que la forma no existe.
 
 **Retador.** T2_mean (media de toda la historia). Un campeón necesita ≥ 6 predicciones y
 ganar por 0,10 errores binomiales; entre técnicas a menos de 0,10 de la mejor, gana la

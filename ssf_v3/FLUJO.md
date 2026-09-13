@@ -53,9 +53,10 @@ las decisiones (`read_decisions`) en vez de calcularlas: no ejecuta 3, 6.2, 7, 8
 | **8** | `run_backtest_analysis` (analysis_backtest) | Fase 3: el juez | dict(backtest_long, decision_technique, decision_error_bands, backtest_holdout) |
 | 8.1 | `technique_dimension` (techniques) + `Config.write` | Catálogo de técnicas | **dim_tecnica** |
 | 8.2 | `rolling_origin_backtest` (cribado) → `_backtest_chunk` → `eligible_techniques`, `CATALOGUE[...]` | Solo ids con soporte; últimos `backtest_max_targets` objetivos; horizontes de cribado; todas las técnicas elegibles; error con signo y normalizado | screen (tabla larga) |
-| 8.3 | `select_technique` | Campeón por id: mejor `err_norm` medio que gane al retador por el margen con ≥ N predicciones; dentro del margen, familia más rica solo con historia suficiente | decision_technique |
+| 8.3 | `select_technique` → `band_of_horizon` | Campeón por id **y tramo de horizonte** (corto 1-3, medio 4-6, largo 7+), juzgado con los horizontes de cribado de cada tramo: mejor `err_norm` medio que gane al retador por el margen con ≥ N predicciones; dentro del margen, familia más rica solo con historia suficiente; un tramo sin cribado hereda el anterior | decision_technique (una fila por id × tramo) |
+| 8.3b | `print_candidates` | Consola: pools para mirar en detalle (la forma paga a largo; corto y largo eligen distinto; nada bate a lo simple) con la llamada `sheet("<id>")` | consola `[3] candidates` |
 | 8.4 | `rolling_origin_backtest` (juicio) | Campeón + retador en los horizontes restantes | judged (tabla larga) |
-| 8.5 | `error_bands` | Por (id, h): p5/p95 del error normalizado (propios o de familia), monótonos en h | decision_error_bands |
+| 8.5 | `error_bands` → `technique_for` | Por (id, h): p5/p95 del error normalizado de la técnica del tramo de ese h (propios o de familia), monótonos en h | decision_error_bands |
 | 8.6 | `holdout_report` | Meses ≥ `backtest_test_start` predichos con la técnica elegida, banda y dentro/fuera | backtest_holdout |
 | 8.7 | `Config.write` ×4 | Persistir | **backtest_pred**, **decision_technique**, **decision_error_bands**, **backtest_holdout**; consola `[3]` leaderboard, campeones, hold-out por h (plano, ponderado, sesgo, % en banda) |
 | **9** | `run_uplift` (run_uplift) | Fase 4: la revalorización | decision_uplift |
@@ -66,7 +67,7 @@ las decisiones (`read_decisions`) en vez de calcularlas: no ejecuta 3, 6.2, 7, 8
 | **10** | (pipeline) | Reunir las seis decisiones en un dict | decisions |
 | **11** | `run_forecast_assembly` (run_forecast_assembly) | Fase 5: el forecast, su banda, el total | dict(forecast_detail, forecast_bands, horizon_report, forecast_by_level, forecast_units_extended) |
 | 11.1 | `extend_forecast_units` → `term_months_of`, `acquisition_factor_by_series` | Filas simuladas más allá de la pipeline conocida: `unidades(m) = renovados(m − plazo) × factor`, plazo por fila, solo filas del filtro, valoradas al precio renovado (AUV observado o AUV × uplift) | **fu_extended** (si hay horizonte extendido); consola `[5] extended horizon` |
-| 11.2 | `assemble_forecast` → `rate_forecast_by_estimation_id` → `predict` | Por fila futura: tasa por cascada (técnica del id a h → tasa estimada → celda → global), tope, uplift de su celda, $ esperados, orígenes | detail |
+| 11.2 | `assemble_forecast` → `rate_forecast_by_estimation_id` → `predict` | Por fila futura: predicción de la técnica del pool a h, más la desviación propia de la serie ponderada por z (forma del pool, nivel de la serie); cascada tasa estimada → celda → global; tope; uplift de su celda; $ esperados; orígenes; `tasa_pool_h` y `desviacion_propia_pp` | detail |
 | 11.3 | `forecast_bands` | Banda asimétrica por fila: cuantiles del id al h juzgado más cercano × se del pool ⊕ se de la fila; en pp y $ | bands |
 | 11.4 | `Config.write` ×2 | Persistir | **forecast_detail**, **forecast_bands** |
 | 11.5 | `horizon_report` → `aggregate_with_bands` | Total por mes con banda (suma lineal dentro de (id, mes), cuadratura entre), % simulado, % desde tasa de serie, monotonía | **horizon_report_total** |
@@ -83,4 +84,5 @@ las decisiones (`read_decisions`) en vez de calcularlas: no ejecuta 3, 6.2, 7, 8
 | C | `run_series_diagnostics` (diagnostics_plots) | Top series por $ o historia: tabla + 4 PNG (tasas, pipeline, perfil estacional, hold-out) | rutas de las figuras |
 | D | `showcase_sheets` → `pick_showcase_series`, `series_sheet` | Una estacional, una con tendencia, una con cambio de nivel, una de la celda con más mix-shift | {motivo: PNG} |
 | E | `guess_game` | Pregunta (historia hasta el origen) y respuesta (verdad, retador, campeón) | 2 PNG |
+| G | `technique_error_by_horizon(key)` (diagnostics_plots) | Error medio por horizonte, una línea por técnica, con el campeón de cada tramo marcado: donde "lo simple gana cerca y la forma gana lejos" se ve | 1 PNG |
 | F | `read_decisions` + `run_pipeline` (pipeline) | El run mensual: lee `decision_*` y ejecuta 0, 1, 2, 4, 5, 6.1, 9, 11 y 12 sin decidir | las tablas de RUN |

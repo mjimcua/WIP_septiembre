@@ -139,19 +139,32 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
                                        "tasa_real", "n_real", "err_pp", "se_binom_pp", "err_norm"])
 
 
-def select_technique(backtest_long: pd.DataFrame, configuration: Config, history_months: dict = None) -> pd.DataFrame:
-    """One champion per estimation id, with its evidence.
+def band_of_horizon(h: int, bands: dict) -> str:
+    """The horizon band (corto / medio / largo) a horizon belongs to."""
+    for name, (low, high) in bands.items():
+        if low <= h <= high:
+            return name
+    return list(bands)[-1]
 
-    OUTPUT:  decision_technique: id_estimacion, tecnica, tecnica_origen (campeon/retador),
-             err_norm_medio, err_pp_medio, n_predicciones, retador_err_norm.
-    RULES:   score = mean |err_norm| over every horizon and origin. Champion = lowest
-             score with n_predicciones ≥ minimum AND score < challenger score − margin;
-             among candidates within the margin of the best, the richest family wins when
-             the id has ≥ richer_family_min_history_months of history; else the simplest.
+
+def select_technique(backtest_long: pd.DataFrame, configuration: Config, history_months: dict = None) -> pd.DataFrame:
+    """One champion per estimation id AND horizon band, with its evidence.
+
+    OUTPUT:  decision_technique: id_estimacion, tramo_h, h_min, h_max, tecnica,
+             tecnica_origen (campeon/retador), err_norm_medio, err_pp_medio,
+             n_predicciones, retador_err_norm.
+    RULES:   per band, score = mean |err_norm| over the screen horizons inside the band
+             and every origin. Champion = lowest score with n_predicciones ≥ minimum AND
+             score < challenger score − margin; among candidates within the margin of the
+             best, the richest family wins when the id has ≥ richer_family_min_history_months
+             of history; else the simplest. A band with no screen horizon inside it takes
+             the champion of the previous band.
     """
     rows = []
     challenger = configuration.challenger_technique
-    for estimation_id, block in backtest_long.groupby("id_estimacion"):
+    bands = configuration.backtest_horizon_bands
+    scored = backtest_long.assign(tramo_h=backtest_long["h"].map(lambda h: band_of_horizon(int(h), bands)))
+    for (estimation_id, band_name), block in scored.groupby(["id_estimacion", "tramo_h"]):
         absolute = block.assign(abs_norm=block["err_norm"].abs(), abs_pp=block["err_pp"].abs())
         scores = absolute.groupby("tecnica_id").agg(err_norm_medio=("abs_norm", "mean"), err_pp_medio=("abs_pp", "mean"),
                                                     n_predicciones=("err_norm", "size"))
@@ -166,11 +179,35 @@ def select_technique(backtest_long: pd.DataFrame, configuration: Config, history
             chosen = max(within_margin.index, key=lambda t: (rank_sign * family_rank(t), -within_margin.loc[t, "err_norm_medio"]))
             origin = CHAMPION_ORIGIN
         row = scores.loc[chosen] if chosen in scores.index else pd.Series(dict(err_norm_medio=np.nan, err_pp_medio=np.nan, n_predicciones=0))
-        rows.append(dict(id_estimacion=estimation_id, tecnica=chosen, tecnica_origen=origin,
+        rows.append(dict(id_estimacion=estimation_id, tramo_h=band_name, h_min=bands[band_name][0], h_max=bands[band_name][1],
+                         tecnica=chosen, tecnica_origen=origin,
                          err_norm_medio=round(float(row["err_norm_medio"]), 4), err_pp_medio=round(float(row["err_pp_medio"]), 3),
                          n_predicciones=int(row["n_predicciones"]), retador_err_norm=round(challenger_score, 4)))
-    return pd.DataFrame(rows, columns=["id_estimacion", "tecnica", "tecnica_origen", "err_norm_medio", "err_pp_medio",
-                                       "n_predicciones", "retador_err_norm"])
+    decision = pd.DataFrame(rows, columns=["id_estimacion", "tramo_h", "h_min", "h_max", "tecnica", "tecnica_origen", "err_norm_medio",
+                                           "err_pp_medio", "n_predicciones", "retador_err_norm"])
+    # a band without screen evidence inherits the previous band's champion
+    filled = []
+    for estimation_id, block in decision.groupby("id_estimacion"):
+        previous = None
+        for band_name in bands:
+            hit = block[block["tramo_h"] == band_name]
+            if len(hit):
+                previous = hit.iloc[0].to_dict()
+                filled.append(previous)
+            elif previous is not None:
+                inherited = dict(previous, tramo_h=band_name, h_min=bands[band_name][0], h_max=bands[band_name][1],
+                                 tecnica_origen=previous["tecnica_origen"] + "_heredado", n_predicciones=0)
+                filled.append(inherited)
+    return pd.DataFrame(filled, columns=decision.columns)
+
+
+def technique_for(decision_technique: pd.DataFrame) -> dict:
+    """(id_estimacion, h) → technique, from the band table (h_min..h_max per row)."""
+    lookup = {}
+    for _, row in decision_technique.iterrows():
+        for h in range(int(row["h_min"]), int(min(row["h_max"], 60)) + 1):
+            lookup[(row["id_estimacion"], h)] = row["tecnica"]
+    return lookup
 
 
 def error_bands(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, horizons: list,
@@ -188,21 +225,23 @@ def error_bands(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, h
     """
     own_groups = {key: group.to_numpy() for key, group in backtest_long.groupby(["id_estimacion", "tecnica_id", "h"])["err_norm"]}
     family_groups = {key: group.to_numpy() for key, group in backtest_long.groupby(["tecnica_id", "h"])["err_norm"]}
+    technique_at = technique_for(decision_technique)
     rows = []
-    for _, choice in decision_technique.iterrows():
+    for estimation_id in decision_technique["id_estimacion"].unique():
         low_so_far, high_so_far = 0.0, 0.0
         for h in horizons:
-            at_h = own_groups.get((choice["id_estimacion"], choice["tecnica"], h), np.array([]))
+            technique = technique_at.get((estimation_id, h), configuration.challenger_technique)
+            at_h = own_groups.get((estimation_id, technique, h), np.array([]))
             if len(at_h) >= configuration.band_min_predictions:
                 origin, source = "propia", at_h
             else:
-                origin, source = "familia", family_groups.get((choice["tecnica"], h), np.array([]))
+                origin, source = "familia", family_groups.get((technique, h), np.array([]))
             low = weighted_quantile(source, configuration.band_low_quantile)
             high = weighted_quantile(source, configuration.band_high_quantile)
             if not np.isfinite(low) or not np.isfinite(high):
                 low, high, origin = -configuration.z, configuration.z, "binomial"
             low_so_far, high_so_far = min(low_so_far, low), max(high_so_far, high)
-            rows.append(dict(id_estimacion=choice["id_estimacion"], tecnica=choice["tecnica"], h=h,
+            rows.append(dict(id_estimacion=estimation_id, tecnica=technique, h=h,
                              q_low_norm=round(low_so_far, 4), q_high_norm=round(high_so_far, 4),
                              n_predicciones=int(len(source)), banda_origen=origin))
     return pd.DataFrame(rows)
@@ -222,8 +261,9 @@ def holdout_report(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame
     if start is None:
         months = sorted(backtest_long["mes_objetivo"].unique())
         start = months[-12] if len(months) >= 12 else months[0]
-    chosen = decision_technique[["id_estimacion", "tecnica"]].rename(columns={"tecnica": "tecnica_id"})
-    holdout = backtest_long[backtest_long["mes_objetivo"] >= start].merge(chosen, on=["id_estimacion", "tecnica_id"])
+    technique_at = technique_for(decision_technique)
+    chosen = pd.DataFrame([dict(id_estimacion=i, h=h, tecnica_id=t) for (i, h), t in technique_at.items()])
+    holdout = backtest_long[backtest_long["mes_objetivo"] >= start].merge(chosen, on=["id_estimacion", "h", "tecnica_id"])
     bands = decision_error_bands[["id_estimacion", "h", "q_low_norm", "q_high_norm"]]
     holdout = holdout.merge(bands, on=["id_estimacion", "h"], how="left")
     holdout["banda_low_pp"] = (holdout["q_low_norm"] * holdout["se_binom_pp"]).round(2)
@@ -232,6 +272,36 @@ def holdout_report(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame
     return holdout.rename(columns={"tecnica_id": "tecnica"})[["id_estimacion", "mes_objetivo", "origen", "h", "tecnica", "tasa_pred",
                                                              "tasa_real", "n_real", "err_pp", "err_norm", "banda_low_pp",
                                                              "banda_high_pp", "dentro_banda"]]
+
+
+def print_candidates(decision_technique: pd.DataFrame, screen: pd.DataFrame, configuration: Config) -> None:
+    """Console: a few pools worth looking at in detail, with the call that opens them.
+
+    · biggest gain of the long-band champion over the challenger (a shape that pays far out)
+    · pools whose short and long champions differ (the horizon matters there)
+    · the biggest pools whose champion is the challenger in every band (nothing beats simple)
+    """
+    bands = list(configuration.backtest_horizon_bands)
+    wide = decision_technique.pivot_table(index="id_estimacion", columns="tramo_h", values="tecnica", aggfunc="first")
+    support = screen.groupby("id_estimacion")["n_real"].median()
+    print("[3] candidates to look at in detail (open with sheet(\"<id_estimacion>\", configuration)):")
+    long_band = bands[-1]
+    far = decision_technique[(decision_technique["tramo_h"] == long_band) & (decision_technique["tecnica_origen"] == CHAMPION_ORIGIN)].copy()
+    if len(far):
+        far["gain"] = far["retador_err_norm"] - far["err_norm_medio"]
+        far = far.assign(n=far["id_estimacion"].map(support)).sort_values(["gain", "n"], ascending=False).head(3)
+        for _, row in far.iterrows():
+            print(f"   shape pays far out    {row['id_estimacion'][:60]:<60} {row['tecnica']:<20} gains {row['gain']:.2f} binomial units over the challenger at {long_band} · n≈{row['n']:.0f}")
+    if len(bands) > 1 and bands[0] in wide.columns and long_band in wide.columns:
+        differ = wide[wide[bands[0]] != wide[long_band]].copy()
+        differ["n"] = differ.index.map(support)
+        for estimation_id, row in differ.sort_values("n", ascending=False).head(3).iterrows():
+            print(f"   horizon matters       {estimation_id[:60]:<60} {row[bands[0]]:<20} near, {row[long_band]} far · n≈{row['n']:.0f}")
+    simple = decision_technique.groupby("id_estimacion")["tecnica_origen"].apply(lambda s: (s == CHALLENGER_ORIGIN).all())
+    simple_ids = simple[simple].index
+    biggest = support.reindex(simple_ids).sort_values(ascending=False).head(2)
+    for estimation_id, n in biggest.items():
+        print(f"   nothing beats simple  {estimation_id[:60]:<60} {configuration.challenger_technique:<20} in every band · n≈{n:.0f}")
 
 
 def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame, configuration: Config,
@@ -252,8 +322,9 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
     history_months = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["meses"]))
     decision_technique = select_technique(screen, configuration, history_months)
     remaining = [h for h in horizons if h not in screen_horizons]
-    chosen_and_challenger = {row["id_estimacion"]: {row["tecnica"], configuration.challenger_technique}
-                             for _, row in decision_technique.iterrows()}
+    chosen_and_challenger = {}
+    for _, row in decision_technique.iterrows():
+        chosen_and_challenger.setdefault(row["id_estimacion"], {configuration.challenger_technique}).add(row["tecnica"])
     judged = rolling_origin_backtest(monthly_series, decision_dynamics, remaining, configuration, chosen_and_challenger) if remaining else screen.head(0)
     backtest_long = pd.concat([screen, judged], ignore_index=True).sort_values(["id_estimacion", "mes_objetivo", "h", "tecnica_id"])
     bands = error_bands(backtest_long, decision_technique, horizons, configuration)
@@ -263,14 +334,20 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
     configuration.write(bands, "decision_error_bands")
     configuration.write(holdout, "backtest_holdout")
     if len(screen):
-        leaderboard = screen.groupby("tecnica_id")["err_norm"].apply(lambda e: float(np.mean(np.abs(e)))).sort_values()
+        bands_map = configuration.backtest_horizon_bands
+        scored = screen.assign(tramo_h=screen["h"].map(lambda h: band_of_horizon(int(h), bands_map)), abs_norm=screen["err_norm"].abs())
         print(f"[3] backtest: {len(backtest_long):,} predictions · {backtest_long['id_estimacion'].nunique()} estimation ids with support · "
               f"{backtest_long['mes_objetivo'].nunique()} target months · screened at h={screen_horizons}, judged at h={horizons}")
-        print("[3] leaderboard on the screen (mean |error| in binomial units; 1.0 = one sampling error):")
-        for technique_id, score in leaderboard.items():
-            print(f"   {technique_id:<20} {score:5.2f}   {CATALOGUE[technique_id][1]}")
-        print(f"[3] champions: {decision_technique['tecnica'].value_counts().to_dict()} · "
-              f"{(decision_technique['tecnica_origen'] == CHAMPION_ORIGIN).mean():.0%} beat the challenger")
+        print("[3] leaderboard by horizon band (mean |error| in binomial units; 1.0 = one sampling error):")
+        table = scored.groupby(["tecnica_id", "tramo_h"])["abs_norm"].mean().unstack("tramo_h").reindex(columns=list(bands_map))
+        table = table.sort_values(list(bands_map)[0])
+        print("   " + f"{'technique':<20}" + "".join(f"{b:>9}" for b in table.columns))
+        for technique_id, row in table.iterrows():
+            print("   " + f"{technique_id:<20}" + "".join(f"{v:9.2f}" if pd.notna(v) else f"{'-':>9}" for v in row))
+        for band_name, block in decision_technique.groupby("tramo_h", sort=False):
+            print(f"[3] champions {band_name:<6} {block['tecnica'].value_counts().head(6).to_dict()} · "
+                  f"{(block['tecnica_origen'] == CHAMPION_ORIGIN).mean():.0%} beat the challenger")
+        print_candidates(decision_technique, screen, configuration)
     if len(holdout):
         weighted = holdout.assign(abs_pp=holdout["err_pp"].abs(), w=holdout["n_real"])
         by_h = weighted.groupby("h").apply(lambda g: pd.Series(dict(

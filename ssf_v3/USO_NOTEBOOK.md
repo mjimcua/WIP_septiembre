@@ -105,3 +105,13 @@ s["summary"]; s["tables"]["parent_ladder"]; s["figure"]      # resumen · tablas
 Y los tres casos de muestra con `from diagnostics_plots import showcase_sheets; showcase_sheets(configuration)` (estacional, tendencia, cambio de nivel, mix-shift), y el juego «tú frente a la máquina» con `guess_game(fs_id, 6, configuration)`.
 
 **Hasta dónde ejecutar para ver las figuras**: `run_series_diagnostics` y `sheet` necesitan `series_card` (fase 1.3) y `decision_dynamics` (fase 2); la figura de hold-out y la técnica necesitan la fase 3. Con `run_analysis` completo todo está.
+
+
+## Error por horizonte de un pool
+
+```python
+from diagnostics_plots import technique_error_by_horizon
+technique_error_by_horizon("<id_estimacion o fs_id o clave>", configuration)
+```
+
+La consola de la fase 3 (`[3] candidates to look at in detail`) imprime los ids que merece la pena abrir con `sheet(...)` y con esta figura.

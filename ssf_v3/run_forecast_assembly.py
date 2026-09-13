@@ -33,7 +33,7 @@ Three pieces:
 import numpy as np
 import pandas as pd
 
-from binomial_reference import MIN_PROPORTION_VARIANCE
+from binomial_reference import MIN_PROPORTION_VARIANCE, inverse_logit, logit
 from config import Config, hash_key, join_columns
 from techniques import month_numbers_of, predict
 
@@ -191,6 +191,8 @@ def rate_forecast_by_estimation_id(monthly_series: dict, decision_technique: pd.
     OUTPUT:  DataFrame(id_estimacion, period, tasa_pred, h, tecnica). h = months from the
              id's last month with truth.
     """
+    from analysis_backtest import technique_for
+    technique_at = technique_for(decision_technique) if "h_min" in decision_technique.columns else {}
     technique_by_id = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica"]))
     labels = {row["id_estimacion"]: dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]), requiere_firme=requires_firm)
               for _, row in decision_dynamics.iterrows()}
@@ -201,11 +203,11 @@ def rate_forecast_by_estimation_id(monthly_series: dict, decision_technique: pd.
             continue
         rates, months = valid["rate"].to_numpy(dtype=float), pd.PeriodIndex(valid.index)
         month_numbers = month_numbers_of(months)
-        technique = technique_by_id.get(estimation_id, DEFAULT_TECHNIQUE)
         for month in target_months:
             h = int((month - months[-1]).n)
             if h < 1:
                 continue
+            technique = technique_at.get((estimation_id, h), technique_by_id.get(estimation_id, DEFAULT_TECHNIQUE))
             value = predict(technique, rates, month_numbers, h, labels.get(estimation_id, {}))
             rows.append((estimation_id, month, value, h, technique))
     return pd.DataFrame(rows, columns=["id_estimacion", "period", "tasa_pred", "h", "tecnica"])
@@ -223,6 +225,13 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
              tasa_estimada of the series → mean of the mandatory cell → global mean;
              each step records its origin. Saturated at rate_cap. Uplift: the cell's
              decision, else neutral 1.0.
+             THE SHAPE OF THE POOL, THE LEVEL OF THE SERIES: for a series that borrows
+             (rung > 0, blended with credibility z), the pool's prediction carries the
+             season and the trend, and the series' own deviation from the pool level is
+             added on top, weighted by z, on the logit scale:
+                 logit(tasa) = logit(pred_pool_h) + z · (logit(own level) − logit(pool level))
+             z ≈ 0 → the pool's rate; z high → the pool's shape shifted by the series'
+             own difference. `desviacion_propia_pp` records the shift applied per row.
     NOTE:    vectorized: one merge per step of the cascade, no per-row loop.
     """
     period = configuration.period_col
@@ -240,6 +249,21 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
     predictions = rate_forecast_by_estimation_id(monthly_series, decision_technique, decision_dynamics,
                                                  sorted(rows[period].unique()), configuration.seasonal_requires_firm)
     rows = rows.merge(predictions, on=["id_estimacion", period], how="left")
+    rows["tasa_pool_h"] = rows["tasa_pred"]
+    # the series' own level on top of the pool's shape, weighted by its credibility
+    offset_columns = [c for c in ("fs_id", "z", "peldano", "alcanzo_suelo", "tasa_propia", "tasa_pariente") if c in series_estimates.columns]
+    offsets = series_estimates[offset_columns].drop_duplicates("fs_id")
+    if {"z", "peldano", "alcanzo_suelo", "tasa_propia", "tasa_pariente"} <= set(offsets.columns):
+        blends = (offsets["peldano"] > 0) & (offsets["alcanzo_suelo"] == 1) & offsets["tasa_propia"].notna() & offsets["tasa_pariente"].notna()
+        offsets["_delta_logit"] = np.where(blends, offsets["z"] * (logit(offsets["tasa_propia"].fillna(0.5)) - logit(offsets["tasa_pariente"].fillna(0.5))), 0.0)
+        rows = rows.merge(offsets[["fs_id", "_delta_logit"]], on="fs_id", how="left")
+        rows["_delta_logit"] = rows["_delta_logit"].fillna(0.0)
+        shifted = inverse_logit(logit(rows["tasa_pred"].fillna(0.5)) + rows["_delta_logit"])
+        rows["tasa_pred"] = np.where(rows["tasa_pred"].notna(), shifted, np.nan)
+        rows = rows.drop(columns=["_delta_logit"])
+    # origin per (id, band): the row's own technique row; fall back to the first row of the id
+    origin_rows = decision_technique.drop_duplicates(["id_estimacion", "tecnica"]) if "tramo_h" in decision_technique.columns else decision_technique
+    technique_origin_pair = dict(zip(zip(origin_rows["id_estimacion"], origin_rows["tecnica"]), origin_rows["tecnica_origen"]))
     technique_origin = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica_origen"]))
     # step 2-4: the series estimate, the cell mean, the global mean
     estimate_of = series_estimates[["fs_id", "tasa_estimada"]].drop_duplicates("fs_id")
@@ -255,11 +279,14 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
     rows["tasa"] = np.select([from_technique, from_estimate, from_cell],
                              [rows["tasa_pred"], rows["tasa_estimada"], rows["tasa_celda"]], default=global_mean)
     rows["tasa"] = rows["tasa"].clip(upper=configuration.rate_cap)
+    rows["desviacion_propia_pp"] = (100 * (rows["tasa"] - rows["tasa_pool_h"].fillna(rows["tasa"]))).round(3)
     rows["tasa_origen"] = np.select([from_technique | from_estimate, from_cell], [ORIGIN_SERIES, ORIGIN_CELL], default=ORIGIN_GLOBAL)
     rows["tecnica"] = rows["tecnica"].where(from_technique, DEFAULT_TECHNIQUE)
-    rows["tecnica_origen"] = rows["id_estimacion"].map(technique_origin).where(from_technique, TECH_DEFAULT).fillna(TECH_DEFAULT)
+    pair_origin = pd.Series([technique_origin_pair.get((i, t), technique_origin.get(i, TECH_DEFAULT)) for i, t in zip(rows["id_estimacion"], rows["tecnica"])], index=rows.index)
+    rows["tecnica_origen"] = pair_origin.where(from_technique, TECH_DEFAULT).fillna(TECH_DEFAULT)
     rows["h"] = rows["h"].where(from_technique, np.nan)
     rows = rows.drop(columns=["tasa_pred", "tasa_estimada", "tasa_celda"])
+    rows["tasa_pool_h"] = rows["tasa_pool_h"].round(4)
     uplift_of = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift"]))
     uplift_origin = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift_origen"]))
     rows["uplift"] = rows["uplift_cell_id"].map(uplift_of).fillna(1.0)
@@ -370,14 +397,17 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         future = pd.concat([known_future, extended], ignore_index=True)
     else:
         future = known_future
-    detail = assemble_forecast(future, series_estimates, decisions["decision_support"], decisions["decision_technique"],
+    estimates_with_levels = series_estimates.merge(series_card[["fs_id", "tasa_propia"]], on="fs_id", how="left") \
+        if "tasa_propia" not in series_estimates.columns else series_estimates
+    detail = assemble_forecast(future, estimates_with_levels, decisions["decision_support"], decisions["decision_technique"],
                                decisions["decision_dynamics"], monthly_series, decisions["decision_uplift"], configuration)
     bands = forecast_bands(detail, decisions["decision_error_bands"], decisions["decision_dynamics"], configuration)
     level_of = series_card.set_index("fs_id")["nivel_riesgo"]
     bands["nivel_riesgo"] = bands["fs_id"].map(level_of).fillna("D_sin_historia")
     detail_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", "uplift_cell_id", "celda_id",
                       period, configuration.pipeline_units_col, configuration.pipeline_usd_col, "h", "tecnica", "tecnica_origen",
-                      "tasa", "tasa_origen", "uplift", "uplift_origen", "esperado_usd", "simulada", "nivel_riesgo"]
+                      "tasa_pool_h", "desviacion_propia_pp", "tasa", "tasa_origen", "uplift", "uplift_origen", "esperado_usd",
+                      "simulada", "nivel_riesgo"]
     band_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", period, "h", "banda_low_pp", "banda_high_pp",
                     "banda_low_usd", "banda_high_usd", "banda_origen", "esperado_usd"]
     configuration.write(bands[detail_columns].assign(**{period: bands[period].astype(str)}), "forecast_detail")

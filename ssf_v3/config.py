@@ -389,7 +389,12 @@ class Config:
     # Two-stage judge: every eligible technique is screened at these horizons to choose
     # the champion; then only champion + challenger are judged at every horizon. {1,3,6}
     # covers the operational month, the quarter and the half-year with ~3× less cost.
-    backtest_screen_horizons: list = field(default_factory=lambda: [1, 3, 6])
+    backtest_screen_horizons: list = field(default_factory=lambda: [1, 3, 6, 12])
+    # Horizon bands: ONE champion per band, not one per pool. A 3-month average wins the
+    # near months and knows nothing about January twelve months out; a seasonal or mixed
+    # technique may lose at h=1 and win at h=12. Each band is judged with the screen
+    # horizons that fall inside it (so every band needs at least one screen horizon).
+    backtest_horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 3], "medio": [4, 6], "largo": [7, 999]})
     # Parallel workers for the backtest (1 = sequential; identical result). Useful with
     # thousands of estimation ids on a multi-core machine; harmless otherwise.
     backtest_workers: int = 1

@@ -129,9 +129,10 @@ def tell(filtered: dict) -> None:
               f"trend {int(d['tendencia'])} ({d['pendiente_pp_ano']} pp/yr)")
     technique = filtered["decision_technique"]
     if len(technique):
-        t = technique.iloc[0]
-        print(f"[technique] {t['tecnica']} ({t['tecnica_origen']}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units "
-              f"over {int(t['n_predicciones'])} predictions · challenger T2_mean at {t['retador_err_norm']}")
+        for _, t in technique.iterrows():
+            band = f" {t['tramo_h']} (h {int(t['h_min'])}-{int(min(t['h_max'], 99))})" if "tramo_h" in technique.columns else ""
+            print(f"[technique]{band} {t['tecnica']} ({t['tecnica_origen']}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units "
+                  f"over {int(t['n_predicciones'])} predictions · challenger at {t['retador_err_norm']}")
     else:
         print("[technique] none judged (series without support: challenger + binomial band by doctrine)")
     bands = filtered["decision_error_bands"]
