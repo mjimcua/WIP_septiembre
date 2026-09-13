@@ -113,7 +113,7 @@ def tell(filtered: dict) -> None:
     ladder = filtered["parent_ladder"].sort_values("peldano")
     print("[ladder]    rung · relative · n · rate · chosen")
     for _, rung in ladder.iterrows():
-        mark = "◀ chosen" if rung["elegido"] == 1 else ""
+        mark = "<- chosen" if rung["elegido"] == 1 else ""
         print(f"            {int(rung['peldano'])}  {rung['descripcion']:<32} {rung['padre_id']:<30} n={rung['n_padre']:>8.1f}  "
               f"rate={rung['tasa_padre'] if pd.notna(rung['tasa_padre']) else float('nan'):.4f}  {mark}")
     print(f"[estimate]  id_estimacion {card['id_estimacion']} (rung {int(card['peldano'])}, n_efectivo {card['n_efectivo']:.0f}) · "
@@ -151,7 +151,7 @@ def tell(filtered: dict) -> None:
         for _, u in uplift.iterrows():
             print(f"            {u['uplift_cell_id']:<24} n={u['n_renovadores']:>8.0f}  {u['uplift']:.4f}  {u['uplift_origen']:<7} "
                   f"[{u['banda_low'] if pd.notna(u['banda_low']) else float('nan'):.4f}, {u['banda_high'] if pd.notna(u['banda_high']) else float('nan'):.4f}]"
-                  f"{'  ⚠ clipped' if u['recortado'] else ''}")
+                  f"{'  (clipped at the cap)' if u['recortado'] else ''}")
     detail, forecast_bands = filtered["forecast_detail"], filtered["forecast_bands"]
     if len(detail):
         joined = detail.merge(forecast_bands[["fu_comb_key", "banda_low_pp", "banda_high_pp", "banda_origen"]], on="fu_comb_key", how="left")

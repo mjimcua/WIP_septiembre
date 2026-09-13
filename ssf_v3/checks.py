@@ -38,13 +38,13 @@ class CheckRecorder:
         RULES:   a failure is never fatal: the run continues so ONE execution reports
                  every broken check, not just the first.
         EDGE CASES: none.
-        CONSOLE: one line, ✓ or ✗ plus the message.
+        CONSOLE: one line, ok or FAIL plus the message.
         STEPS:
           [1] Print the outcome.
           [2] Count it under the current block, keeping the text if it failed.
         """
         # [1] the reader sees each check as it happens
-        print(("  ✓ " if condition else "  ✗ ") + message)
+        print(("  ok   " if condition else "  FAIL ") + message)
 
         # [2] bookkeeping for the final panel
         if condition:
@@ -105,7 +105,7 @@ class CheckRecorder:
         for block_name in self.passed_by_block:
             passed_count = self.passed_by_block[block_name]
             failed_count = self.failed_by_block[block_name]
-            block_mark = "✓" if failed_count == 0 else "✗"
+            block_mark = "ok  " if failed_count == 0 else "FAIL"
             print(f"  {block_mark} {block_name:<52} {passed_count:>3}/{passed_count + failed_count}")
 
         # [2] the totals
@@ -117,7 +117,7 @@ class CheckRecorder:
             print(f"\nFAILED CHECKS ({len(self.failure_messages)}):")
             for failure_message in self.failure_messages:
                 print(f"  - {failure_message}")
-            print(f"\n{title} FAIL ✗")
+            print(f"\n{title} FAIL")
             return 1
-        print(f"\n{title} PASS ✓")
+        print(f"\n{title} PASS")
         return 0

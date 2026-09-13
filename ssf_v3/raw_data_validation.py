@@ -139,8 +139,8 @@ def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     role_census = validated[configuration.dataset_role_col].value_counts().to_dict()
     for expected_role in EXPECTED_DATASET_ROLES:
         if role_census.get(expected_role, 0) == 0:
-            print(f"[0.1] ⚠ role '{expected_role}' is EMPTY in the raw: check the SQL labeling")
-    print(f"[0.1] contract ✓ {declared_column_count} columns declared · {len(validated):,} rows")
+            print(f"[0.1] WARNING role '{expected_role}' is EMPTY in the raw: check the SQL labeling")
+    print(f"[0.1] contract OK: {declared_column_count} columns declared · {len(validated):,} rows")
     return validated
 
 
@@ -152,7 +152,7 @@ def apply_current_month_doctrine(validated: pd.DataFrame, configuration: Config)
              reacq_*_col.
     OUTPUT:  a copy where every current-month row has role "projection" and every
              projection row has its renewed and reacquired measures set to NaN.
-    RULES:   sealed doctrine (2026-08-16): the current month has a complete pipeline
+    RULES:   the current month has a complete pipeline
              and an incomplete result, so it is never test (it would contaminate the
              backtest) and never train; it is projected like any future month. Any
              renewal already booked in the current month OR in any projection month is
@@ -306,7 +306,7 @@ def aggregate_to_forecast_units(fine_table: pd.DataFrame, configuration: Config)
         "a unit (inconsistent extract) or the taxonomy is misdeclared")
 
     print(f"[0.2] fine {len(fine_table):,} rows → forecast units {len(forecast_units):,} · "
-          f"pipeline conserved ✓ (${units_pipeline_usd:,.0f})")
+          f"pipeline conserved (${units_pipeline_usd:,.0f})")
     return forecast_units
 
 

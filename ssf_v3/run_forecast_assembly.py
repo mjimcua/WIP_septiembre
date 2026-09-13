@@ -121,7 +121,7 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     factors, global_factor = acquisition_factor_by_series(units, configuration)
     rate_by_series = series_estimates.set_index("fs_id")["tasa_estimada"]
     known = fine_table.copy()
-    known["fs_id"] = join_columns(known, configuration.rate_series_columns)
+    known["fs_id"] = join_columns(known, configuration.rate_series_columns)      # same formula as phase 0
     known["simulada"] = 0
     known["_term"] = term_months_of(known, configuration)
     known["_due"] = known[period] + known["_term"]              # the month this row's renewals fall due again
@@ -392,6 +392,6 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     print("[5] month · expected · band (asymmetric) · % from simulated pipeline")
     for _, row in horizon.iterrows():
         print(f"   {row[period]}  ${row['esperado_usd']:>11,.0f}  {row['pct_low']:+6.1f}% / {row['pct_high']:+5.1f}%  "
-              f"simulated {row['pct_simulado']:5.1f}%  {'' if row['banda_monotona'] else '⚠ band narrowed'}")
+              f"simulated {row['pct_simulado']:5.1f}%  {'' if row['banda_monotona'] else 'band narrowed beyond tolerance'}")
     return dict(forecast_detail=bands[detail_columns], forecast_bands=bands[band_columns], horizon_report=horizon,
                 forecast_by_level=by_level, forecast_units_extended=extended)

@@ -30,6 +30,7 @@ if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
 import analysis_backtest                  # noqa: E402
+import analysis_data_profile              # noqa: E402
 import analysis_dimensions                # noqa: E402
 import analysis_dynamics                  # noqa: E402
 import raw_data_validation                # noqa: E402
@@ -80,13 +81,16 @@ def phase_0(configuration: Config) -> dict:
     fine_table = raw_data_validation.build_fine_table(conditioned, configuration)
     forecast_units = raw_data_validation.aggregate_to_forecast_units(fine_table, configuration)
     fu_lookup, comb_lookup = raw_data_validation.build_key_lookups(forecast_units, fine_table)
-    configuration.write(forecast_units, "fact_fu")
+    labeled_units = raw_data_validation.label_universe_and_routes(forecast_units, configuration)
+    # both fact tables carry the series id (fs_id; write stamps fs_key) so the BI joins
+    # unit -> series without deriving it from fu_id
+    fine_table["fs_id"] = join_columns(fine_table, configuration.rate_series_columns)
+    configuration.write(labeled_units, "fact_fu")
     configuration.write(fine_table, "fact_fine")
     configuration.write(fu_lookup, "lookup_fu")
     configuration.write(comb_lookup, "lookup_comb")
-    labeled_units = raw_data_validation.label_universe_and_routes(forecast_units, configuration)
     support_reference.build_support_reference(labeled_units, configuration)
-    return dict(fine_table=fine_table, labeled_units=labeled_units)
+    return dict(fine_table=fine_table, labeled_units=labeled_units, conditioned=conditioned)
 
 
 def build_key_bridge(fine_table: pd.DataFrame, units: pd.DataFrame, decision_support: pd.DataFrame,
@@ -137,9 +141,11 @@ def run_analysis(configuration: Config) -> dict:
     started = time.time()
     results = phase_0(configuration)
     fine_table, labeled_units = results["fine_table"], results["labeled_units"]
+    profiles = analysis_data_profile.run_raw_profile(results["conditioned"], configuration)
 
     section("PHASE 1 — rate series, dimensions, support ladder", started); started = time.time()
     units, series_summary = run_rate_series.build_rate_series(labeled_units, configuration)
+    profiles.update(analysis_data_profile.run_fu_profile(units, fine_table, configuration))
     dimensions = analysis_dimensions.run_dimension_analysis(units, series_summary, configuration)
     series_estimates, series_card, decision_support, parent_ladder = run_support_ladder.run_support_ladder(
         units, series_summary, dimensions["decision_eta2"], configuration)
@@ -167,10 +173,11 @@ def run_analysis(configuration: Config) -> dict:
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
         decision_support=decision_support, parent_ladder=parent_ladder, backtest_holdout=backtest["backtest_holdout"],
         decision_uplift=decision_uplift), configuration, started)
-    print(SECTION_RULE, "\n✓ analysis complete · decisions and tables in", configuration.outdir)
+    print(SECTION_RULE, "\nanalysis complete · decisions and tables in", configuration.outdir)
     return dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
                 series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
-                decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report)
+                decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report,
+                profiles=profiles)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -192,7 +199,7 @@ def read_decisions(configuration: Config) -> dict:
             written = pd.to_datetime(table["process_date"].iloc[0])
             age_months = (datetime.datetime.now() - written).days / 30.4
             if age_months > configuration.decision_max_age_months:
-                print(f"[run] ⚠ decision '{logical_name}' is {age_months:.1f} months old "
+                print(f"[run] WARNING decision '{logical_name}' is {age_months:.1f} months old "
                       f"(max {configuration.decision_max_age_months}): the analysis has expired")
         decisions[logical_name] = table.drop(columns=[c for c in ("process_date", "execution_id") if c in table.columns])
     return decisions
@@ -220,5 +227,5 @@ def run_pipeline(configuration: Config) -> dict:
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
         decision_support=decision_support, parent_ladder=parent_ladder, decision_uplift=decision_uplift), configuration, started)
-    print(SECTION_RULE, "\n✓ monthly run complete · tables in", configuration.outdir)
+    print(SECTION_RULE, "\nmonthly run complete · tables in", configuration.outdir)
     return dict(fine_table=fine_table, units=units, series_card=series_card, forecast=forecast, validation=report)

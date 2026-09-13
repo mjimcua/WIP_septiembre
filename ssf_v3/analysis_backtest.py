@@ -133,7 +133,7 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
             with ProcessPoolExecutor(max_workers=workers) as pool:
                 rows = [row for chunk_rows in pool.map(_backtest_chunk, arguments) for row in chunk_rows]
         except Exception as error:                       # a spawn problem must not kill the analysis
-            print(f"[3] ⚠ parallel backtest failed ({type(error).__name__}: {error}); running sequentially")
+            print(f"[3] WARNING parallel backtest failed ({type(error).__name__}: {error}); running sequentially")
             rows = _backtest_chunk((items, labels, gate_by_id, horizons, parameters, techniques_by_id))
     return pd.DataFrame(rows, columns=["id_estimacion", "mes_objetivo", "origen", "h", "tecnica_id", "tasa_pred",
                                        "tasa_real", "n_real", "err_pp", "se_binom_pp", "err_norm"])

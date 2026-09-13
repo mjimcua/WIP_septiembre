@@ -67,6 +67,7 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 |---|---|---|
 | `config.py` | ambos | dataclass Config (contrato de columnas, taxonomía, parámetros), registro de tablas, `write` |
 | `binomial_reference.py` | ambos | se binomial, Wilson, el dial, logit, φ, cuantiles |
+| `analysis_data_profile.py` | ANALYSIS | niveles 0 y 1: perfil del raw (calendario, dominios y su estabilidad, coherencia de medidas, plazo) y de las unidades (completitud, dial, combinaciones, meses extremos) |
 | `raw_data_validation.py` | RUN | fase 0: contrato, doctrina mes en curso, tabla fina, forecast units, claves, universos/rutas |
 | `support_reference.py` | ANALYSIS | fu_summary: la foto del soporte |
 | `run_rate_series.py` | RUN | 1.1 series, huecos (tasa NaN), tasa por fila, resumen con signo |
@@ -86,9 +87,9 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 | `synthetic_v3.py` | test | dataset sintético con un escenario por feature |
 | `checks.py`, `test_fixtures.py`, `test_*.py`, `run_all_tests.py` | test | 310 checks de lógica |
 
-## Tablas (32, prefijo `sff_`)
+## Tablas (36, prefijo `sff_`)
 
-Fase 0: `fact_fu`, `fact_fine`, `fact_fu_gaps`, `lookup_fu`, `lookup_comb`, `fu_summary`.
+Fase 0: `fact_fu`, `fact_fine`, `fact_fu_gaps`, `lookup_fu`, `lookup_comb`, `fu_summary`, `raw_profile`, `dim_domains`, `fu_profile`, `dial_buckets`.
 Fase 1: `fs_summary`, `series_card`, `risk_levels`, `parent_ladder`, `support_chain`,
 `decision_support`, `decision_eta2`, `decision_eta2_pairs`, `simpson_contrafactual`,
 `mix_shift`, `tv_calibration`. Fase 2: `decision_dynamics`. Fase 3: `dim_tecnica`,

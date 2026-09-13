@@ -13,6 +13,6 @@ if __name__ == "__main__":
         print(f"\n▶ {test_file}")
         completed = subprocess.run([sys.executable, test_file])
         if completed.returncode != 0:
-            print(f"\n✗ stopped at {test_file}")
+            print(f"\nSTOPPED at {test_file}")
             sys.exit(1)
-    print("\n✓ every test file passed")
+    print("\nevery test file passed")

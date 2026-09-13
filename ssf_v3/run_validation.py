@@ -4,7 +4,7 @@ Three families of checks, persisted as `validation_report` (check, familia, valo
 esperado, estado, detalle):
   INTEGRITY  the data is whole: money conserved, keys unique, every raw row reaches the
              bridge. A FAIL here means the run cannot be trusted.
-  DOCTRINE   the sealed rules hold: no projection row with results, no rate above the
+  DOCTRINE   the rules of the framework hold: no projection row with results, no rate above the
              cap, positive uplifts, no NaN in the forecast, mandatory dims never annulled
              before the cell, signs never mixed, band never narrowing with the horizon.
   QUALITY    informative, not blocking: money by risk level, hold-out calibration, share
@@ -76,7 +76,7 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
     bands = artifacts.get("forecast_bands")
     if bands is not None and len(bands):
         measured = 1 - bands["banda_origen"].str.startswith("binomial").mean()
-        rows.append(check_row("rows with a measured band", FAMILY_QUALITY, f"{measured:.0%}", "→ 100%", measured >= 0.5 or None))
+        rows.append(check_row("rows with a measured band", FAMILY_QUALITY, f"{measured:.0%}", "towards 100%", measured >= 0.5 or None))
     horizon = artifacts.get("horizon_report")
     if horizon is not None and len(horizon):
         narrowed = int((horizon["banda_monotona"] == 0).sum())
@@ -114,7 +114,7 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
     configuration.write(report, "validation_report")
     print("VALIDATION PANEL")
     for _, row in report.iterrows():
-        mark = {"PASS": "✓", "FAIL": "✗", "WARN": "•"}[row["estado"]]
+        mark = {"PASS": "ok  ", "FAIL": "FAIL", "WARN": "warn"}[row["estado"]]
         print(f"  {mark} [{row['familia']:<9}] {row['check']:<44} {row['valor']:>14}   ({row['esperado']})")
     failed = report[(report["estado"] == "FAIL") & (report["familia"].isin([FAMILY_INTEGRITY, FAMILY_DOCTRINE]))]
     if len(failed):

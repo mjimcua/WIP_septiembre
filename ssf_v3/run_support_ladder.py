@@ -138,7 +138,7 @@ def build_relatives(series_values: dict, sign: str, configuration: Config,
     for rung_offset, dim in enumerate(mandatory_collapse_order, start=4):
         if sign != SIGN_NEUTRAL:
             if configuration.signed_ladder_max_loss <= 0:
-                break                              # sealed doctrine: the cell × sign is the TOP
+                break                              # default rule: the cell × sign is the top
             cumulative_loss += float((collapse_loss or {}).get(dim, 1.0))
             if cumulative_loss > configuration.signed_ladder_max_loss + 1e-12:
                 break                              # cohorts start to differ: stop here, sign kept

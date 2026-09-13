@@ -89,6 +89,10 @@ PHYSICAL_TABLE_NAMES = {
     "lookup_fu": "lookup_fu",
     "lookup_comb": "lookup_comb",
     "forecast_units_raw_summary": "fu_summary",
+    "raw_profile": "raw_profile",
+    "dimension_domains": "dim_domains",
+    "fu_profile": "fu_profile",
+    "dial_buckets": "dial_buckets",
     # ── phase 1 · series, ladder, card
     "forecast_series_raw_summary": "fs_summary",
     "series_card": "series_card",
@@ -329,7 +333,7 @@ class Config:
     own_level_min_history_months: int = 12
     # How far a series WITH SIGN may climb beyond its mandatory cell × sign, keeping the
     # sign: it may collapse mandatory dims in the sequential order while the CUMULATIVE R²
-    # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the sealed doctrine (the
+    # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the default rule (the
     # ladder of a signed series ends at the cell × sign). 0.05 lets it collapse the dims
     # that separate almost nothing (in Kamelot: band_2, band_1, product_2, product_1),
     # i.e. cohorts nearly identical — pooled signal, not Simpson. Watch S_signo_bajo_suelo.

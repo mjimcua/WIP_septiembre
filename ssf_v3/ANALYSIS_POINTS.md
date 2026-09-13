@@ -24,6 +24,21 @@ SELECT ruta, universo, COUNT(*) series, SUM(usd_proyectado) usd FROM sff_fu_summ
 Qué mirar: cuánto dinero va por `heuristic` (series solo en proyección) y por
 `time_series` (universo reservado). Si es > 5 % del total, hay que hablar de ellos.
 
+**P0.3 · Perfil del raw (nivel 0)** — `raw_profile` y `dim_domains`.
+```sql
+SELECT seccion, concepto, valor, detalle FROM sff_raw_profile
+SELECT dimension, valor, filas, usd, primer_mes, ultimo_mes FROM sff_dim_domains WHERE aparece_dentro = 1 OR desaparece_dentro = 1 ORDER BY usd DESC
+```
+Qué mirar: calendario contiguo por rol; filas con renovados > pipeline o uplift de fila fuera de [0,3, 3]; valores de dimensión que aparecen o desaparecen a mitad de historia (movimientos de cartera, cambios de catálogo); plazos sin mapear.
+
+**P0.4 · Perfil de las unidades (nivel 1)** — `fu_profile` y `dial_buckets`.
+```sql
+SELECT tramo_dial, series, usd, pct_usd FROM sff_dial_buckets ORDER BY 1
+SELECT fs_id, primer_mes, ultimo_mes, meses, huecos, nace_dentro, muere_dentro, n_mediana, combinaciones_max, meses_0pct, meses_100pct
+FROM sff_fu_profile WHERE nace_dentro = 1 OR muere_dentro = 1 OR huecos > 3 ORDER BY usd_proyectado DESC
+```
+Qué mirar: cuánto dinero está en unidades por debajo de 30 antes de prestar (la foto cruda), series que nacen o mueren dentro de la historia, series con muchas combinaciones de revalorización por unidad (nunca tendrán uplift propio).
+
 ---
 
 ## FASE 1 · series, dimensiones, escalera
