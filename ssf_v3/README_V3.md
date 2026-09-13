@@ -6,7 +6,7 @@ bandas asimétricas calibradas, uplift por celda, y horizonte extendido con pipe
 simulada. Todo en un directorio plano; nada del legacy.
 
 Lee primero `POR_QUE_ESTE_FORECAST.md` (por qué así) y `GUION_V3.md` (qué hace cada
-pieza); `GLOSARIO.md` para los términos; `METODOS.md` para cada técnica estadística explicada con números (cuadratura, credibilidad, η², Kitagawa, φ, logit, bandas); `PARAMETROS.md` para cada parámetro y su valor
+pieza); `GLOSARIO.md` para los términos; `COTA_BINOMIAL.md` para se_pp_max / moe / el dial 30-271-752 y por qué importa; `METODOS.md` para cada técnica estadística explicada con números (cuadratura, credibilidad, η², Kitagawa, φ, logit, bandas); `PARAMETROS.md` para cada parámetro y su valor
 por defecto justificado; `AUDITORIA.md` para auditar una serie (Power BI y notebook);
 `ANALYSIS_POINTS.md` para qué mirar cuando corra sobre datos reales; `PENSAR_JUNTOS.md`
 para las preguntas abiertas de ajuste; `USO_NOTEBOOK.md` para trabajar desde un notebook.
@@ -87,7 +87,7 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 | `synthetic_v3.py` | test | dataset sintético con un escenario por feature |
 | `checks.py`, `test_fixtures.py`, `test_*.py`, `run_all_tests.py` | test | 310 checks de lógica |
 
-## Tablas (36, prefijo `sff_`)
+## Tablas (37, prefijo `sff_`)
 
 Fase 0: `fact_fu`, `fact_fine`, `fact_fu_gaps`, `lookup_fu`, `lookup_comb`, `fu_summary`, `raw_profile`, `dim_domains`, `fu_profile`, `dial_buckets`.
 Fase 1: `fs_summary`, `series_card`, `risk_levels`, `parent_ladder`, `support_chain`,
@@ -96,7 +96,7 @@ Fase 1: `fs_summary`, `series_card`, `risk_levels`, `parent_ladder`, `support_ch
 `backtest_pred`, `backtest_holdout`, `decision_technique`, `decision_error_bands`.
 Fase 4: `uplift_chain`, `decision_uplift`. Fase 5: `key_bridge`, `fu_extended`,
 `forecast_detail`, `forecast_bands`, `horizon_report_total`, `forecast_by_level`,
-`validation_report`.
+`pipeline_summary`, `validation_report`.
 
 Ids y claves: `fu_id`/`fu_key` (unidad), `comb_id`/`comb_key` (combinación de extras de
 revalorización), `fu_comb_key` (fila del raw), `fs_id`/`fs_key` (serie), `id_estimacion`/
@@ -106,7 +106,7 @@ que lleve el id (`Config.stamp_derived_keys`); `key_bridge` une todos por fila d
 
 ## Niveles de riesgo
 
-A propio (peldaño 0, ≥ 12 meses) · A2 propio corto (peldaño 0, < 12 meses) · B prestado (peldaño 1-2: pariente que comparte todas las mandatory) · C lejano (peldaño ≥ 3: celda o mandatory colapsada) · S señal bajo suelo (con flag, celda × signo sin llegar al suelo: mejor tasa de su signo, ruidosa) · M signo mixto · D sin historia · N sin impacto · T universo ts. La consola imprime la leyenda completa tras la tabla de dinero (`LEVEL_DEFINITIONS`).
+A propio (n ≥ 271, ≥ 12 meses: sola) · A2 propio corto (n ≥ 271, < 12 meses) · A3 propio reforzado (30 ≤ n < 271: su tasa completada con su primer pariente con soporte) · B prestado (peldaño 1-2: pariente que comparte todas las mandatory) · C lejano (peldaño ≥ 3: celda o mandatory colapsada) · S señal bajo suelo (con flag, celda × signo sin llegar al suelo: mejor tasa de su signo, ruidosa) · M signo mixto · D sin historia · N sin impacto · T universo ts. La consola imprime la leyenda completa tras la tabla de dinero (`LEVEL_DEFINITIONS`).
 
 ## Divergencias declaradas respecto a DISENO_SPLIT / DISENO_V2
 

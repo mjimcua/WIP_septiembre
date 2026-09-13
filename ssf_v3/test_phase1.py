@@ -235,8 +235,28 @@ def test_climb_and_estimate() -> None:
                        "the report shows levels A, B, S and M")
 
 
+def test_own_rate_floor() -> None:
+    RECORDER.start_block("1.3 · own_rate_floor (evidence vs precision)")
+    with tempfile.TemporaryDirectory() as folder:
+        configuration = ladder_config(folder, own_rate_floor=271.0)
+        results = run_to_ladder(configuration)
+        card = results["card"].set_index("fs_id")
+        s1 = card.loc["EU|0|0|web"]
+        RECORDER.check(s1["peldano"] == 2 and s1["id_estimacion"] == "EU|SIG=neutral|*" and 0 < s1["z"] < 1,
+                       "S1 (n=200 < 271): climbs to its first relative with support and BLENDS (z between 0 and 1)")
+        RECORDER.check(s1["nivel_riesgo"] == "A3_propio_reforzado", "S1 is level A3: own evidence, reinforced")
+        RECORDER.check(abs(s1["z"] - 200 / (200 + s1["k"])) < 1e-3, "z = n/(n+k) with the series' own n")
+        RECORDER.check(card.loc["EU|1|0|tele", "peldano"] == 2 and card.loc["EU|1|0|tele", "nivel_riesgo"] == "B_prestado",
+                       "a series under the support floor behaves as before (borrows, level B)")
+        big = ladder_config(folder, own_rate_floor=150.0)
+        card_big = run_to_ladder(big)["card"].set_index("fs_id")
+        RECORDER.check(card_big.loc["EU|0|0|web", "peldano"] == 0 and card_big.loc["EU|0|0|web", "z"] == 1.0
+                       and card_big.loc["EU|0|0|web", "nivel_riesgo"] == "A_propio",
+                       "with own_rate_floor=150, S1 (n=200) speaks alone: rung 0, z=1, level A")
+
+
 ALL_TESTS = [test_rate_series, test_dimension_separation, test_mix_shift, test_timevarying_calibration,
-             test_build_relatives, test_climb_and_estimate]
+             test_build_relatives, test_climb_and_estimate, test_own_rate_floor]
 
 
 def main() -> int:

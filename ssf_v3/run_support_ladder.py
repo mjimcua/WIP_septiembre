@@ -46,6 +46,7 @@ SIGN_FIELD_PREFIX = "SIG="
 # Risk levels (persisted in `nivel_riesgo`)
 LEVEL_OWN = "A_propio"
 LEVEL_OWN_SHORT = "A2_propio_corto"
+LEVEL_OWN_REINFORCED = "A3_propio_reforzado"
 LEVEL_BORROWED = "B_prestado"
 LEVEL_FAR = "C_lejano"
 LEVEL_NO_HISTORY = "D_sin_historia"
@@ -200,24 +201,33 @@ def climb_ladder(series_summary: pd.DataFrame, patterns: pd.DataFrame, pools: pd
              decision_support: fs_id → id_estimacion (pattern of the chosen relative),
              peldano, n_efectivo, tasa_pariente, alcanzo_suelo (0/1), signo, ruta.
              parent_ladder: fs_id × peldano with n, tasa and elegido (the trace).
-    RULES:   the chosen relative is the first with n_pool ≥ floor; if none, the LAST rung
-             (best available), flagged `alcanzo_suelo = 0`. Non-trainable series (heuristic,
-             no_impact) get no decision: their id_estimacion is themselves with n 0.
+    RULES:   rung 0 (the series itself) is chosen only when its n ≥ own_rate_floor (it
+             predicts alone). Otherwise the chosen relative is the first rung ≥ 1 with
+             n_pool ≥ support_floor (the series blends with it). If none reaches the
+             support floor: rung 0 when the series itself has n ≥ support_floor (own rate,
+             no reinforcement available), else the LAST rung (best available), flagged
+             `alcanzo_suelo = 0`. Non-trainable series get no decision.
     """
     ladder = patterns.merge(pools, on="patron", how="left").fillna({"n_pool": 0.0})
     decisions, trace_rows = [], []
     info = series_summary.set_index("fs_id")
     for series_id, rungs in ladder.groupby("fs_id", sort=False):
         rungs = rungs.sort_values("peldano")
-        chosen, chosen_trace_position = None, None
+        chosen, chosen_trace_position, own_trace_position = None, None, None
         for _, rung in rungs.iterrows():
             trace_rows.append(dict(fs_id=series_id, peldano=int(rung["peldano"]), descripcion=rung["descripcion"],
                                    padre_id=rung["patron"], n_padre=round(float(rung["n_pool"]), 1),
                                    tasa_padre=round(float(rung["tasa_pool"]), 4) if np.isfinite(rung["tasa_pool"]) else np.nan,
                                    elegido=0))
-            if chosen is None and rung["n_pool"] >= configuration.support_floor:
+            if rung["peldano"] == 0:
+                own_trace_position = len(trace_rows) - 1
+                if rung["n_pool"] >= configuration.own_rate_floor:      # precise enough to speak alone
+                    chosen, chosen_trace_position = rung, own_trace_position
+            elif chosen is None and rung["n_pool"] >= configuration.support_floor:
                 chosen, chosen_trace_position = rung, len(trace_rows) - 1
         reached_floor = chosen is not None
+        if not reached_floor and rungs.iloc[0]["n_pool"] >= configuration.support_floor:
+            chosen, chosen_trace_position, reached_floor = rungs.iloc[0], own_trace_position, True   # own, unreinforced
         if not reached_floor:                       # nobody reached the floor: best available = last rung
             chosen, chosen_trace_position = rungs.iloc[-1], len(trace_rows) - 1
         trace_rows[chosen_trace_position]["elegido"] = 1
@@ -302,8 +312,9 @@ def estimate_rates(series_summary: pd.DataFrame, decision_support: pd.DataFrame,
 # One line per level: the RULE that assigns it and what it means for the prediction.
 # Printed after the money table so the reader never has to guess what a level is.
 LEVEL_DEFINITIONS = [
-    (LEVEL_OWN,               "peldaño 0 y ≥ 12 meses",          "n_propio ≥ suelo: predice con su propia tasa; nadie le presta"),
-    (LEVEL_OWN_SHORT,         "peldaño 0 y < 12 meses",          "soporte propio pero historia corta: aún no ha visto todas las estaciones"),
+    (LEVEL_OWN,               "n ≥ own_rate_floor y ≥ 12 meses",   "precisión propia (±5 pp o mejor): predice sola, z = 1"),
+    (LEVEL_OWN_SHORT,         "n ≥ own_rate_floor y < 12 meses",   "precisión propia pero historia corta: aún no ha visto todas las estaciones"),
+    (LEVEL_OWN_REINFORCED,    "suelo ≤ n < own_rate_floor",         "evidencia propia sin precisión: usa su tasa y la completa con su primer pariente con soporte (z = n/(n+k)); si no lo hay, va sola"),
     (LEVEL_BORROWED,          "peldaño 1-2 con suelo",           "bajo el suelo; toma la tasa de un pariente que comparte TODAS las mandatory (mismo signo o la extra anulada): cohorte casi idéntica"),
     (LEVEL_FAR,               "peldaño ≥ 3 con suelo",           "bajo el suelo; el pariente es la celda mandatory entera o una mandatory colapsada: cohorte más gruesa, riesgo de heredar comportamiento ajeno"),
     (LEVEL_SIGNED_UNDER_FLOOR, "con señal y ningún peldaño llega", "tiene una señal (flag neg/pos) y su escalera termina en celda × signo sin llegar al suelo: predice con la mejor tasa de SU signo, ruidosa, porque no se le deja mezclarse con series sin señal"),
@@ -334,6 +345,8 @@ def risk_level(series: pd.Series, configuration: Config) -> str:
         return LEVEL_MIXED
     if series["alcanzo_suelo"] == 0:
         return LEVEL_SIGNED_UNDER_FLOOR if series["signo"] != SIGN_NEUTRAL else LEVEL_FAR
+    if series["n_propio"] >= configuration.support_floor and series["n_propio"] < configuration.own_rate_floor:
+        return LEVEL_OWN_REINFORCED
     if series["peldano"] == 0:
         return LEVEL_OWN if series["meses_historia"] >= configuration.own_level_min_history_months else LEVEL_OWN_SHORT
     if series["peldano"] <= configuration.close_relative_max_rung:

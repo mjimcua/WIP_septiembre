@@ -81,8 +81,8 @@ EXPECTED_PHYSICAL_NAMES = {"forecast_units_raw_summary": "sff_fu_summary",
                            "fact_fine": "sff_fact_fine"}
 
 # Size of the physical-name registry: the 36 tables of v3 (phase 0: 10, with the level-0/1
-# profiles · phase 1: 11 · phase 2: 1 · phase 3: 5 · phase 4: 2 · phase 5: 7).
-EXPECTED_REGISTRY_SIZE = 36
+# profiles · phase 1: 11 · phase 2: 1 · phase 3: 5 · phase 4: 2 · phase 5: 8).
+EXPECTED_REGISTRY_SIZE = 37
 DECISION_TABLES = ["decision_eta2", "decision_support", "decision_dynamics", "decision_technique",
                    "decision_error_bands", "decision_uplift"]
 

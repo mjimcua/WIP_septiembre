@@ -92,7 +92,8 @@ def ladder_config(temporary_directory: str, **overrides) -> Config:
     """A LadderConfig writing to a sqlite in the temporary directory."""
     engine = create_engine(f"sqlite:///{os.path.join(temporary_directory, 'test.db')}")
     arguments = dict(LADDER_TAXONOMY)
-    arguments.update(dict(sql_engine=engine, sql_schema=None, outdir=temporary_directory, backtest_test_start="2025-07"))
+    arguments.update(dict(sql_engine=engine, sql_schema=None, outdir=temporary_directory, backtest_test_start="2025-07",
+                          own_rate_floor=30.0))       # the six-series ladder was designed with one floor
     arguments.update(overrides)
     return LadderConfig(**arguments)
 

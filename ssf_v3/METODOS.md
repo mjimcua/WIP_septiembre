@@ -70,6 +70,14 @@ pariente: `k = varianza dentro / varianza entre` de las series hermanas del pool
 Grupo homogéneo (las hermanas tienen la misma tasa) → *entre* ≈ 0 → k grande → z ≈ 0 → la
 serie toma la del pool. Grupo heterogéneo → k pequeño → conserva la suya.
 
+**Dos suelos.** `support_floor = 30` dice qué grupo tiene evidencia suficiente para
+prestar (por debajo, una tasa es una moneda: ±15 pp). `own_rate_floor = 271` dice qué
+serie tiene precisión suficiente para ir sola (±5 pp, la promesa a negocio). Entre 30 y
+271 hay evidencia sin precisión: la serie sube hasta su primer pariente con soporte y
+mezcla con z = n/(n+k). Con un solo suelo en 30, una cohorte de 120 iría sola con ±7,5
+pp teniendo al lado un pool de 2.400 con ±1,7; con un solo suelo en 271, ignoraría sus
+120 clientes y las señales de churn (que casi nunca reúnen 271) se quedarían sin pool.
+
 **Ejemplo (sintético).** Negativos `EU|SIG=neg|A|web`: hermanas con tasas 0,31-0,44 →
 k = 111; la serie de n = 12 tiene z = 12/(12+111) = 0,10: 10 % suya, 90 % del pool. Con
 menos de 3 hermanas no hay varianza entre que estimar: k = `k_cred` = 60.

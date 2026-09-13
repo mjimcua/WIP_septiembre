@@ -171,6 +171,14 @@ mucho dinero. Compartir: la tabla (suele ser < 50 filas).
 
 ## FASE 5 · forecast
 
+**P5.0 ★★ El resumen de la pipeline** — `pipeline_summary` (o consola `[5] PIPELINE SUMMARY`).
+```sql
+SELECT bloque, meses, pipeline_usd, esperado_usd, banda_low_usd, banda_high_usd, pct_banda_high,
+       cota_min_usd, pct_cota_min, cota_max_usd, pct_cota_max, pct_simulado, pct_nivel_A, error_realizado_pct
+FROM sff_pipeline_summary
+```
+Qué mirar: por bloque (resto del año, año siguiente, total) los tres márgenes en dinero: la **banda calibrada** (lo que prometemos), la **cota mínima** (el muestreo de cada unidad en cuadratura: ningún método la baja), la **cota máxima** (todo el muestreo sumado en la misma dirección: el peor caso absoluto). La mejora de la pipeline se mide como la banda acercándose a la cota mínima. `error_realizado_pct` es lo que pasó de verdad en el hold-out a h ≤ 4. Compartir: la tabla entera (3-4 filas). Es la primera que hay que mirar.
+
 **P5.1 ★ Horizonte** — `horizon_report_total`.
 ```sql
 SELECT period, esperado_usd, banda_low_usd, banda_high_usd, pct_low, pct_high, pct_simulado, pct_tasa_serie

@@ -167,7 +167,7 @@ def run_analysis(configuration: Config) -> dict:
                      decision_dynamics=decision_dynamics, decision_technique=backtest["decision_technique"],
                      decision_error_bands=backtest["decision_error_bands"], decision_uplift=decision_uplift)
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
-                                                           decisions, monthly_series, configuration)
+                                                           decisions, monthly_series, configuration, backtest["backtest_holdout"])
     report = validate(dict(
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,

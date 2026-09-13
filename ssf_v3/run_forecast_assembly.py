@@ -358,7 +358,7 @@ def horizon_report(bands: pd.DataFrame, configuration: Config) -> pd.DataFrame:
 
 def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_estimates: pd.DataFrame,
                           series_card: pd.DataFrame, decisions: dict, monthly_series: dict,
-                          configuration: Config) -> dict:
+                          configuration: Config, backtest_holdout: pd.DataFrame = None) -> dict:
     """Phase 5 end to end. Persists forecast_units_extended, forecast_detail, forecast_bands,
     horizon_report_total, forecast_by_level."""
     period = configuration.period_col
@@ -386,6 +386,8 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     configuration.write(horizon, "horizon_report_total")
     by_level = aggregate_with_bands(bands, ["nivel_riesgo"], configuration)
     configuration.write(by_level, "forecast_by_level")
+    summary = pipeline_summary(bands, backtest_holdout, configuration)
+    configuration.write(summary, "pipeline_summary")
     print(f"[5] forecast: ${bands['esperado_usd'].sum():,.0f} over {bands[period].nunique()} months · rate origin "
           f"{bands.groupby('tasa_origen')['esperado_usd'].sum().div(bands['esperado_usd'].sum()).mul(100).round(1).to_dict()} · "
           f"technique origin {bands.groupby('tecnica_origen')['esperado_usd'].sum().div(bands['esperado_usd'].sum()).mul(100).round(1).to_dict()}")
@@ -393,5 +395,78 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     for _, row in horizon.iterrows():
         print(f"   {row[period]}  ${row['esperado_usd']:>11,.0f}  {row['pct_low']:+6.1f}% / {row['pct_high']:+5.1f}%  "
               f"simulated {row['pct_simulado']:5.1f}%  {'' if row['banda_monotona'] else 'band narrowed beyond tolerance'}")
+    print_pipeline_summary(summary)
     return dict(forecast_detail=bands[detail_columns], forecast_bands=bands[band_columns], horizon_report=horizon,
-                forecast_by_level=by_level, forecast_units_extended=extended)
+                forecast_by_level=by_level, forecast_units_extended=extended, pipeline_summary=summary)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# THE PIPELINE SUMMARY · what we predict, how well, and the best and worst it can get
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """One table that answers "how good is this pipeline": per block of months and in total,
+    the money to predict, the expected money, THREE margins and the realized error.
+
+    Blocks: the rest of the current year, the next year, everything (`total`).
+    Columns:
+      pipeline_usd        what falls due (known + simulated)
+      esperado_usd        the forecast
+      banda_low/high_usd  the CALIBRATED band (what we promise): backtest quantiles per
+                          id and horizon, aggregated linearly inside (id, month) and in
+                          quadrature across — what the hold-out says we can hold
+      cota_min_usd        the binomial FLOOR in quadrature: the sampling of every unit
+                          with its own rate and its own n, independent units. No method
+                          beats it: with these n, next month will move this much by chance
+      cota_max_usd        the ABSOLUTE WORST CASE: the same sampling margin of every
+                          unit summed linearly, as if every unit missed in the same
+                          direction by its full margin. It cannot really happen; it is
+                          the ceiling of "how wrong could a month be"
+      pct_*               the three margins as % of the expected money
+      pct_simulado        share built on simulated pipeline
+      pct_nivel_A         share of money at levels A/A2/A3 (own precision or reinforced)
+      error_realizado_pct realized hold-out error at h ≤ 4, weighted by units, as % of
+                          the rate (≈ % of money): what actually happened when we predicted
+    Improvements show as banda_* moving toward cota_min; cota_min only moves with more
+    customers per unit (segmenting less, or a bigger portfolio).
+    """
+    period = configuration.period_col
+    frame = bands.copy()
+    frame["year"] = pd.PeriodIndex(frame[period].astype(str), freq="M").year
+    current_year = int(frame["year"].min())
+    frame["bloque"] = np.where(frame["year"] == current_year, f"resto_{current_year}", np.where(frame["year"] == current_year + 1, f"ano_{current_year + 1}", "mas_adelante"))
+    units = frame[configuration.pipeline_units_col].clip(lower=1.0).astype(float)
+    se_row = np.sqrt(np.maximum(frame["tasa"] * (1 - frame["tasa"]), MIN_PROPORTION_VARIANCE) / units)
+    frame["cota_fila_usd"] = configuration.z * se_row * frame[configuration.pipeline_usd_col] * frame["uplift"]
+    frame["nivel_A"] = frame["nivel_riesgo"].astype(str).str.startswith("A")
+    realized = np.nan
+    if holdout is not None and len(holdout):
+        near = holdout[holdout["h"] <= 4]
+        realized = float(np.average(near["err_pp"].abs(), weights=near["n_real"])) if len(near) else np.nan
+    rows = []
+    for block, group in list(frame.groupby("bloque")) + [("total", frame)]:
+        shared = group.groupby(["id_estimacion", period]).agg(low=("banda_low_usd", "sum"), high=("banda_high_usd", "sum"))
+        expected = float(group["esperado_usd"].sum())
+        rows.append(dict(
+            bloque=block, meses=int(group[period].nunique()),
+            pipeline_usd=round(float(group[configuration.pipeline_usd_col].sum()), 2), esperado_usd=round(expected, 2),
+            banda_low_usd=round(-float(np.sqrt((shared["low"] ** 2).sum())), 2), banda_high_usd=round(float(np.sqrt((shared["high"] ** 2).sum())), 2),
+            cota_min_usd=round(float(np.sqrt((group["cota_fila_usd"] ** 2).sum())), 2), cota_max_usd=round(float(group["cota_fila_usd"].sum()), 2),
+            pct_simulado=round(100 * float(group.loc[group["simulada"] == 1, "esperado_usd"].sum()) / max(expected, 1e-9), 1),
+            pct_nivel_A=round(100 * float(group.loc[group["nivel_A"], "esperado_usd"].sum()) / max(expected, 1e-9), 1),
+            error_realizado_pct=round(realized, 2) if np.isfinite(realized) else np.nan))
+    summary = pd.DataFrame(rows)
+    for column in ("banda_low_usd", "banda_high_usd", "cota_min_usd", "cota_max_usd"):
+        summary["pct_" + column.replace("_usd", "")] = (100 * summary[column] / summary["esperado_usd"].replace(0, np.nan)).round(2)
+    order = {f"resto_{current_year}": 0, f"ano_{current_year + 1}": 1, "mas_adelante": 2, "total": 3}
+    return summary.sort_values("bloque", key=lambda s: s.map(order)).reset_index(drop=True)
+
+
+def print_pipeline_summary(summary: pd.DataFrame) -> None:
+    print("[5] PIPELINE SUMMARY · what we predict, the band we promise, the floor nobody beats, the absolute worst case")
+    print("   block         months  pipeline $      expected $    band (calibrated)          floor (binomial, quadrature)  worst case (linear)  simulated  level A  realized |err| h<=4")
+    for _, row in summary.iterrows():
+        print(f"   {row['bloque']:<13} {int(row['meses']):>4}  ${row['pipeline_usd']:>13,.0f}  ${row['esperado_usd']:>13,.0f}  "
+              f"{row['pct_banda_low']:+6.1f}% / {row['pct_banda_high']:+5.1f}% (${row['banda_high_usd']:,.0f})  "
+              f"±{row['pct_cota_min']:.1f}% (${row['cota_min_usd']:,.0f})       ±{row['pct_cota_max']:.1f}% (${row['cota_max_usd']:,.0f})   "
+              f"{row['pct_simulado']:5.1f}%   {row['pct_nivel_A']:5.1f}%   {row['error_realizado_pct'] if pd.notna(row['error_realizado_pct']) else float('nan'):.2f} pp")

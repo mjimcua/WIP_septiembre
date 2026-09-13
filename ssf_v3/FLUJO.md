@@ -37,7 +37,7 @@ las decisiones (`read_decisions`) en vez de calcularlas: no ejecuta 3, 6.2, 7, 8
 | 4.1 | lectura de `decision_eta2` (`orden_colapso`, `perdida_secuencial`, extra anulable) | El orden de colapso y la extra con menor contribución única | order, annullable, collapse_loss |
 | 4.2 | `series_patterns_table` → `build_relatives` → `relative_pattern` | Por serie trainable normal: la lista ordenada de parientes (patrones) según su signo; con signo termina en celda × signo salvo `signed_ladder_max_loss` | patterns (fs_id × peldaño × patrón) |
 | 4.3 | `pool_support` | Soporte y tasa de cada patrón con TODAS las series que casan (suma por mes, mediana de meses) | pools |
-| 4.4 | `climb_ladder` | Subir peldaño a peldaño hasta el primer pariente con n ≥ suelo; si ninguno, el último (alcanzo_suelo = 0) | decision_support (sin k), parent_ladder |
+| 4.4 | `climb_ladder` | Peldaño 0 solo si n ≥ `own_rate_floor` (271: va sola); si no, el primer peldaño ≥ 1 con n ≥ `support_floor` (30: mezcla con él); si ninguno y la serie tiene n ≥ 30, ella misma sin refuerzo; si no, el último (alcanzo_suelo = 0) | decision_support (sin k), parent_ladder |
 | 4.5 | `estimate_credibility_k` | k de Bühlmann-Straub por pariente elegido (varianza dentro / entre de las hermanas); `k_cred` si < 3 hermanas | k por id_estimacion |
 | 4.6 | `estimate_rates` → `risk_level` | Tasa estimada `z·propia + (1−z)·pariente` solo con pariente con soporte; `se_estimacion_pp`, `se_prediccion_pp`; nivel de riesgo | series_estimates |
 | 4.7 | `build_support_chain` | La cascada en dinero por serie: cada peldaño subido y el final, con su error y su margen en $ | support_chain |
@@ -71,6 +71,7 @@ las decisiones (`read_decisions`) en vez de calcularlas: no ejecuta 3, 6.2, 7, 8
 | 11.4 | `Config.write` ×2 | Persistir | **forecast_detail**, **forecast_bands** |
 | 11.5 | `horizon_report` → `aggregate_with_bands` | Total por mes con banda (suma lineal dentro de (id, mes), cuadratura entre), % simulado, % desde tasa de serie, monotonía | **horizon_report_total** |
 | 11.6 | `aggregate_with_bands` por nivel + `Config.write` | Dinero y banda por nivel de riesgo | **forecast_by_level**; consola `[5]` mes a mes |
+| 11.7 | `pipeline_summary` + `print_pipeline_summary` | El resumen de la pipeline por bloque (resto del año, año siguiente, total): $ a predecir, esperado, banda calibrada (lo que prometemos), cota mínima binomial en cuadratura (el suelo que nadie baja), cota máxima lineal (el peor caso absoluto), % simulado, % nivel A, error realizado en el hold-out (h ≤ 4, ponderado) | **pipeline_summary**; consola `[5] PIPELINE SUMMARY` |
 | **12** | `validate` → `run_validation` (run_validation) | Panel INTEGRITY / DOCTRINE / QUALITY; detiene si falla INTEGRITY o DOCTRINE | **validation_report**; consola `VALIDATION PANEL` |
 
 ## Fuera del flujo (a demanda)

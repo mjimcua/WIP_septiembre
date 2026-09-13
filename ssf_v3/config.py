@@ -123,6 +123,7 @@ PHYSICAL_TABLE_NAMES = {
     "forecast_bands": "forecast_bands",
     "horizon_report_total": "horizon_report_total",
     "forecast_by_level": "forecast_by_level",
+    "pipeline_summary": "pipeline_summary",
     "validation_report": "validation_report",
 }
 
@@ -318,6 +319,12 @@ class Config:
     # borrow (and level B/C grow); lower it and more series keep noisy own rates. The
     # money by risk level (risk_levels) is the table to look at before touching it.
     support_floor: float = 30.0
+    # The precision floor: a series with n_propio ≥ this predicts ALONE (z = 1); below it,
+    # even with support of its own, it climbs to its first relative with support and blends
+    # with z = n/(n+k). 271 is the dial at ±5 pp: the promise to the business. Between 30
+    # and 271 there is evidence but not precision: it is used, weighted, and completed
+    # with the pool. 30 says who may speak; 271 says who may speak alone.
+    own_rate_floor: float = 271.0
     # Default credibility k (Bühlmann-Straub) when a relative has fewer than 3 siblings
     # with history, so no between/within variance can be estimated. z = n/(n+k): with
     # k=60 a series with n=30 keeps 33 % of its own rate; with n=12, 17 %. 60 ≈ two floors:
