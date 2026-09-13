@@ -107,7 +107,23 @@ def test_dimension_separation() -> None:
                        "a dimension redundant with another has zero unique contribution (type II)")
         RECORDER.check(abs(analysis_dimensions.weighted_eta2(frame, "B", "tasa_propia", "n_propio") - r2_all) < 1e-9,
                        "…while its individual η² is as high as the other's (the confounding)")
-    RECORDER.start_block("1.2 · collapse order")
+    RECORDER.start_block("1.2 · collapse order (sequential)")
+    rng = np.random.default_rng(1)
+    n = 600
+    level_1 = rng.choice(["A", "B"], n)
+    level_2 = np.array([f"{a}{rng.integers(0, 3)}" for a in level_1])
+    level_3 = np.array([f"{b}{rng.integers(0, 2)}" for b in level_2])
+    purchase = rng.choice(["new", "ren"], n)
+    rate = 0.6 + 0.15 * (level_1 == "A") + 0.05 * (pd.Series(level_3).str[-1] == "1").to_numpy() + 0.2 * (purchase == "new") + rng.normal(0, .02, n)
+    nested = pd.DataFrame(dict(regional_level_1=level_1, regional_level_2=level_2, regional_level_3=level_3, purchase_type=purchase,
+                               tasa_propia=rate, n_propio=100.0))
+    sequential = analysis_dimensions.sequential_collapse_order(nested, ["regional_level_1", "regional_level_2", "regional_level_3", "purchase_type"],
+                                                               "tasa_propia", "n_propio")
+    RECORDER.check([d for d, _ in sequential] == ["regional_level_3", "regional_level_2", "regional_level_1", "purchase_type"],
+                   "nested hierarchy collapses finest first; the dim that separates most (purchase_type) collapses LAST")
+    RECORDER.check(sequential[-1][1] > 0.5 and sequential[1][1] < 0.01,
+                   "the sequential loss says what each collapse costs (level_2 ≈ 0 after level_3; purchase_type > .5)")
+    RECORDER.start_block("1.2 · collapse order (legacy tie-break helper)")
     order = collapse_order(["a_level_1", "a_level_2", "b"], {"a_level_1": 0.01, "a_level_2": 0.9, "b": 0.05})
     RECORDER.check(order == ["b", "a_level_2", "a_level_1"],
                    "finest level of a family falls only after its deeper levels; families by unique contribution")

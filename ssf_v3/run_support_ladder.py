@@ -45,6 +45,7 @@ WILDCARD = "*"
 SIGN_FIELD_PREFIX = "SIG="
 # Risk levels (persisted in `nivel_riesgo`)
 LEVEL_OWN = "A_propio"
+LEVEL_OWN_SHORT = "A2_propio_corto"
 LEVEL_BORROWED = "B_prestado"
 LEVEL_FAR = "C_lejano"
 LEVEL_NO_HISTORY = "D_sin_historia"
@@ -291,8 +292,31 @@ def estimate_rates(series_summary: pd.DataFrame, decision_support: pd.DataFrame,
     return pd.DataFrame(rows)
 
 
+# One line per level: the RULE that assigns it and what it means for the prediction.
+# Printed after the money table so the reader never has to guess what a level is.
+LEVEL_DEFINITIONS = [
+    (LEVEL_OWN,               "peldaño 0 y ≥ 12 meses",          "n_propio ≥ suelo: predice con su propia tasa; nadie le presta"),
+    (LEVEL_OWN_SHORT,         "peldaño 0 y < 12 meses",          "soporte propio pero historia corta: aún no ha visto todas las estaciones"),
+    (LEVEL_BORROWED,          "peldaño 1-2 con suelo",           "bajo el suelo; toma la tasa de un pariente que comparte TODAS las mandatory (mismo signo o la extra anulada): cohorte casi idéntica"),
+    (LEVEL_FAR,               "peldaño ≥ 3 con suelo",           "bajo el suelo; el pariente es la celda mandatory entera o una mandatory colapsada: cohorte más gruesa, riesgo de heredar comportamiento ajeno"),
+    (LEVEL_SIGNED_UNDER_FLOOR, "con señal y ningún peldaño llega", "tiene una señal (flag neg/pos) y su escalera termina en celda × signo sin llegar al suelo: predice con la mejor tasa de SU signo, ruidosa, porque no se le deja mezclarse con series sin señal"),
+    (LEVEL_MIXED,             "flags de ambos signos",           "dos modelos marcan al mismo cliente en sentidos opuestos: se queda solo y se cuenta; debería ser ≈ 0"),
+    (LEVEL_NO_HISTORY,        "sin historia (solo proyección)",  "no hay tasa que estimar: cascada celda → global; la banda es la binomial"),
+    (LEVEL_NO_IMPACT,         "sin proyección (solo historia)",  "nada que predecir; se conserva para el backtest y los pools"),
+    (LEVEL_TIME_SERIES,       "universo time_series",            "reservado: solo etiquetado, forecast por cascada"),
+]
+
+
+def print_level_definitions() -> None:
+    """The legend of the risk levels (console, after the money table)."""
+    print("[1.3] risk levels · rule → meaning")
+    for level, rule, meaning in LEVEL_DEFINITIONS:
+        print(f"   {level:<22} {rule:<34} {meaning}")
+
+
 def risk_level(series: pd.Series, configuration: Config) -> str:
-    """The predictive-quality level of a series (the valuation in §2.2 of the script)."""
+    """The predictive-quality level of a series. Rules in LEVEL_DEFINITIONS, in order:
+    route / universe first, then sign, then whether the floor was reached, then the rung."""
     if series["ruta"] == "no_impact":
         return LEVEL_NO_IMPACT
     if series["universo"] != UNIVERSE_NORMAL:
@@ -303,8 +327,8 @@ def risk_level(series: pd.Series, configuration: Config) -> str:
         return LEVEL_MIXED
     if series["alcanzo_suelo"] == 0:
         return LEVEL_SIGNED_UNDER_FLOOR if series["signo"] != SIGN_NEUTRAL else LEVEL_FAR
-    if series["peldano"] == 0 and series["meses_historia"] >= configuration.own_level_min_history_months:
-        return LEVEL_OWN
+    if series["peldano"] == 0:
+        return LEVEL_OWN if series["meses_historia"] >= configuration.own_level_min_history_months else LEVEL_OWN_SHORT
     if series["peldano"] <= configuration.close_relative_max_rung:
         return LEVEL_BORROWED
     return LEVEL_FAR
@@ -353,8 +377,9 @@ def risk_levels_report(series_card: pd.DataFrame, stage: str) -> pd.DataFrame:
     report = series_card.groupby("nivel_riesgo").apply(lambda g: pd.Series({
         "series": len(g), "usd": g["usd_proyectado"].sum(),
         "pct_usd": 100 * g["usd_proyectado"].sum() / total,
-        "error_medio_pp": np.average(g["se_prediccion_pp"].fillna(g["error_binomial_pp"]).fillna(0),
-                                     weights=np.maximum(g["usd_proyectado"], 1e-9))}),
+        "error_medio_pp": (np.average(g["se_prediccion_pp"].fillna(g["error_binomial_pp"]).dropna(),
+                                      weights=np.maximum(g.loc[g["se_prediccion_pp"].fillna(g["error_binomial_pp"]).notna(), "usd_proyectado"], 1e-9))
+                           if g["se_prediccion_pp"].fillna(g["error_binomial_pp"]).notna().any() else np.nan)}),
         include_groups=False).reset_index()
     report.insert(0, "etapa", stage)
     return report.sort_values("nivel_riesgo").reset_index(drop=True)
@@ -364,8 +389,8 @@ def print_risk_levels(report: pd.DataFrame) -> None:
     """Console version of the report."""
     print(f"[1.3] money by risk level · {report['etapa'].iloc[0] if len(report) else ''}")
     for _, row in report.iterrows():
-        print(f"   {row['nivel_riesgo']:<22} {int(row['series']):>4} series  ${row['usd']:>12,.0f}  "
-              f"{row['pct_usd']:5.1f}%  error ±{row['error_medio_pp']:.1f} pp")
+        error = f"error ±{row['error_medio_pp']:.1f} pp" if np.isfinite(row["error_medio_pp"]) else "error n/a (no rate)"
+        print(f"   {row['nivel_riesgo']:<22} {int(row['series']):>4} series  ${row['usd']:>12,.0f}  {row['pct_usd']:5.1f}%  {error}")
 
 
 def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decision_eta2: pd.DataFrame,
@@ -384,7 +409,12 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
     """
     rate_branch = decision_eta2[decision_eta2["rama"] == "tasa"]
     unique = dict(zip(rate_branch["dimension"], rate_branch["contribucion_unica"]))
-    order = collapse_order(configuration.business_mandatory_dims, unique)
+    if "orden_colapso" in rate_branch.columns and (rate_branch["orden_colapso"] > 0).any():
+        ordered = rate_branch[rate_branch["orden_colapso"] > 0].sort_values("orden_colapso")
+        order = [d for d in ordered["dimension"] if d in configuration.business_mandatory_dims]
+        order += [d for d in configuration.business_mandatory_dims if d not in order]     # safety: never lose a dim
+    else:                                                                                   # older decision tables
+        order = collapse_order(configuration.business_mandatory_dims, unique)
     extras = [d for d in configuration.extra_renovacion]
     annullable = min(extras, key=lambda d: unique.get(d, 1.0)) if extras else None
     trainable = series_summary[(series_summary["ruta"] == ROUTE_TRAINABLE) & (series_summary["universo"] == UNIVERSE_NORMAL)]
@@ -411,4 +441,6 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
           f"{(chosen['alcanzo_suelo'] == 1).mean():.0%} of trainable series reached the floor · "
           f"median rung {chosen['peldano'].median():.0f}")
     print_risk_levels(report)
+    print_level_definitions()
+    print(f"[1.3] collapse route of the mandatory dims (first to collapse → last): {' → '.join(order)}")
     return series_estimates, card, decision_support, parent_ladder

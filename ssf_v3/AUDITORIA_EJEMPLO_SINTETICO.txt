@@ -1,0 +1,111 @@
+────────────────────────────────────────────────────────────────────────── 
+AUDIT · series EU|0|0|0|0|A|tele
+ ──────────────────────────────────────────────────────────────────────────
+[history]   route trainable · universe normal · sign neutral · 44 history months (0 gaps) · n_propio 12 units/month · own rate 0.8106 ± 17.8 pp (binomial, z) · projected $1,440
+[ladder]    rung · relative · n · rate · chosen
+            0  itself                           EU|0|0|0|0|A|tele              n=    12.0  rate=0.8106  
+            2  extra 'channel' annulled         EU|SIG=neutral|A|*             n=   612.0  rate=0.8032  ◀ chosen
+            3  mandatory cell × sign            EU|SIG=neutral|*|*             n=   922.0  rate=0.7861  
+            4  mandatory 'region' collapsed     *|SIG=neutral|*|*              n=  1609.0  rate=0.7369  
+[estimate]  id_estimacion EU|SIG=neutral|A|* (rung 2, n_efectivo 612) · k=60.0 → z=0.167 · tasa_estimada 0.8044 = z·own + (1−z)·parent (0.8106 / 0.8032) · se_estimacion 2.3 pp · se_prediccion 11.7 pp · level B_prestado
+[dynamics]  of EU|SIG=neutral|A|*: 44 months · n_pool 612 · phi 5.21 (sd observed 3.67 pp vs binomial 1.61 pp) · gate estacional · seasonal 2 (amp 11.7 pp, 3 cycles, high 4 low 9|10|11|12) · trend 0 (-0.2 pp/yr)
+[technique] T7_seasonal_idx (campeon) · mean |error| 1.878 pp = 1.1678 binomial units over 72 predictions · challenger T2_mean at 2.1359
+[bands]     h · q_low · q_high (× binomial se of the pool month) · origin
+             1  -2.59  +2.10  propia (24 predictions)
+             2  -2.59  +2.10  propia (24 predictions)
+             3  -2.59  +2.10  propia (24 predictions)
+             4  -2.59  +2.10  propia (24 predictions)
+             6  -2.59  +2.10  propia (24 predictions)
+             9  -2.60  +2.13  propia (23 predictions)
+            12  -2.72  +2.13  propia (20 predictions)
+            16  -3.57  +2.29  familia (32 predictions)
+[hold-out]  months ≥ 2026-01 predicted with T7_seasonal_idx:
+            h= 1: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h= 2: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h= 3: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h= 4: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h= 6: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h= 9: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h=12: |error| 0.88 pp · bias +0.88 pp · 100% inside band · 8 months
+            h=16: |error| 0.83 pp · bias +0.37 pp · 100% inside band · 8 months
+[uplift]    cell · renewers · uplift · origin · band
+            EU|d0|0                  n=   25079  1.0319  propia  [1.0291, 1.0349]
+[forecast]  month · h · rate (origin, technique) · uplift · band pp · expected $ · simulated
+            2026-09  h=1.0  0.7643 (serie, T7_seasonal_idx)  ×1.032  [-20.6, +18.6] pp  $       284  
+            2026-10  h=2.0  0.7625 (serie, T7_seasonal_idx)  ×1.032  [-20.6, +18.8] pp  $       283  
+            2026-11  h=3.0  0.7415 (serie, T7_seasonal_idx)  ×1.032  [-21.2, +20.9] pp  $       275  
+            2026-12  h=4.0  0.7743 (serie, T7_seasonal_idx)  ×1.032  [-20.3, +17.6] pp  $       288  
+            2027-01  h=5.0  0.8173 (serie, T7_seasonal_idx)  ×1.032  [-22.3, +13.3] pp  $       213  sim
+            2027-02  h=6.0  0.8289 (serie, T7_seasonal_idx)  ×1.032  [-18.4, +12.1] pp  $       308  sim
+            2027-03  h=7.0  0.8269 (serie, T7_seasonal_idx)  ×1.032  [-16.9, +12.3] pp  $       369  sim
+            2027-04  h=8.0  0.8584 (serie, T7_seasonal_idx)  ×1.032  [-17.9, +9.2] pp  $       287  sim
+            2027-05  h=9.0  0.8251 (serie, T7_seasonal_idx)  ×1.032  [-17.7, +12.5] pp  $       337  sim
+            2027-06  h=10.0  0.8211 (serie, T7_seasonal_idx)  ×1.032  [-22.2, +12.9] pp  $       214  sim
+            2027-07  h=11.0  0.7819 (serie, T7_seasonal_idx)  ×1.032  [-20.1, +16.8] pp  $       290  sim
+            2027-08  h=12.0  0.7985 (serie, T7_seasonal_idx)  ×1.032  [-17.9, +15.2] pp  $       356  sim
+            2027-09  h=13.0  0.7643 (serie, T7_seasonal_idx)  ×1.032  [-21.0, +18.6] pp  $       274  sim
+            2027-10  h=14.0  0.7625 (serie, T7_seasonal_idx)  ×1.032  [-21.0, +18.8] pp  $       273  sim
+            2027-11  h=15.0  0.7415 (serie, T7_seasonal_idx)  ×1.032  [-21.6, +20.9] pp  $       266  sim
+            2027-12  h=16.0  0.7743 (serie, T7_seasonal_idx)  ×1.032  [-21.0, +17.6] pp  $       278  sim
+            total $4,595 over 16 months
+──────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────── 
+AUDIT · series EU|0|1|0|0|A|web
+ ──────────────────────────────────────────────────────────────────────────
+[history]   route trainable · universe normal · sign neg · 44 history months (0 gaps) · n_propio 12 units/month · own rate 0.3352 ± 20.5 pp (binomial, z) · projected $1,440
+[ladder]    rung · relative · n · rate · chosen
+            0  itself                           EU|0|1|0|0|A|web               n=    12.0  rate=0.3352  
+            1  same sign                        EU|SIG=neg|A|web               n=    42.0  rate=0.3858  ◀ chosen
+            2  extra 'channel' annulled         EU|SIG=neg|A|*                 n=    42.0  rate=0.3858  
+            3  mandatory cell × sign            EU|SIG=neg|*|*                 n=    42.0  rate=0.3858  
+AUDIT · series EU|0|1|0|0|A|web
+ ──────────────────────────────────────────────────────────────────────────
+[history]   route trainable · universe normal · sign neg · 44 history months (0 gaps) · n_propio 12 units/month · own rate 0.3352 ± 20.5 pp (binomial, z) · projected $1,440
+[ladder]    rung · relative · n · rate · chosen
+            0  itself                           EU|0|1|0|0|A|web               n=    12.0  rate=0.3352  
+            1  same sign                        EU|SIG=neg|A|web               n=    42.0  rate=0.3858  ◀ chosen
+            2  extra 'channel' annulled         EU|SIG=neg|A|*                 n=    42.0  rate=0.3858  
+            3  mandatory cell × sign            EU|SIG=neg|*|*                 n=    42.0  rate=0.3858  
+[estimate]  id_estimacion EU|SIG=neg|A|web (rung 1, n_efectivo 42) · k=110.9 → z=0.098 · tasa_estimada 0.3809 = z·own + (1−z)·parent (0.3352 / 0.3858) · se_estimacion 6.9 pp · se_prediccion 15.6 pp · level B_prestado
+[dynamics]  of EU|SIG=neg|A|web: 44 months · n_pool 42 · phi 1.4 (sd observed 8.87 pp vs binomial 7.51 pp) · gate apto_promedio · seasonal 0 (amp 14.5 pp, 3 cycles, high - low -) · trend 0 (1.85 pp/yr)
+[technique] T2_mean (retador) · mean |error| 7.267 pp = 0.9777 binomial units over 72 predictions · challenger T2_mean at 0.9777
+[bands]     h · q_low · q_high (× binomial se of the pool month) · origin
+             1  -1.70  +1.58  propia (24 predictions)
+             2  -1.70  +1.58  propia (24 predictions)
+             3  -1.70  +1.58  propia (24 predictions)
+             4  -1.70  +1.58  propia (24 predictions)
+             6  -1.75  +1.58  propia (24 predictions)
+             9  -1.75  +1.58  propia (24 predictions)
+            12  -1.76  +1.58  propia (24 predictions)
+            16  -1.81  +1.58  propia (21 predictions)
+[hold-out]  months ≥ 2026-01 predicted with T2_mean:
+            h= 1: |error| 7.68 pp · bias -3.45 pp · 100% inside band · 8 months
+            h= 2: |error| 7.63 pp · bias -3.53 pp · 100% inside band · 8 months
+            h= 3: |error| 7.66 pp · bias -3.65 pp · 100% inside band · 8 months
+            h= 4: |error| 7.73 pp · bias -3.79 pp · 100% inside band · 8 months
+            h= 6: |error| 7.72 pp · bias -4.05 pp · 100% inside band · 8 months
+            h= 9: |error| 7.78 pp · bias -4.29 pp · 100% inside band · 8 months
+            h=12: |error| 8.00 pp · bias -4.65 pp · 88% inside band · 8 months
+            h=16: |error| 8.11 pp · bias -5.45 pp · 88% inside band · 8 months
+[uplift]    cell · renewers · uplift · origin · band
+            EU|d0|0                  n=   25079  1.0319  propia  [1.0291, 1.0349]
+[forecast]  month · h · rate (origin, technique) · uplift · band pp · expected $ · simulated
+            2026-09  h=1.0  0.3816 (serie, T2_mean)  ×1.032  [-26.4, +26.0] pp  $       142  
+            2026-10  h=2.0  0.3816 (serie, T2_mean)  ×1.032  [-26.4, +26.0] pp  $       142  
+            2026-11  h=3.0  0.3816 (serie, T2_mean)  ×1.032  [-26.4, +26.0] pp  $       142  
+            2026-12  h=4.0  0.3816 (serie, T2_mean)  ×1.032  [-26.4, +26.0] pp  $       142  
+            2027-01  h=5.0  0.3816 (serie, T2_mean)  ×1.032  [-24.2, +23.8] pp  $       177  sim
+            2027-02  h=6.0  0.3816 (serie, T2_mean)  ×1.032  [-23.0, +22.3] pp  $       213  sim
+            2027-03  h=7.0  0.3816 (serie, T2_mean)  ×1.032  [-26.6, +26.0] pp  $       142  sim
+            2027-04  h=8.0  0.3816 (serie, T2_mean)  ×1.032  [-35.2, +34.7] pp  $        71  sim
+            2027-05  h=9.0  0.3816 (serie, T2_mean)  ×1.032  [-29.7, +29.2] pp  $       106  sim
+            2027-06  h=10.0  0.3816 (serie, T2_mean)  ×1.032  [-29.7, +29.2] pp  $       106  sim
+            2027-07  h=11.0  0.3816 (serie, T2_mean)  ×1.032  [-29.7, +29.2] pp  $       106  sim
+            2027-08  h=12.0  0.3816 (serie, T2_mean)  ×1.032  [-24.5, +23.8] pp  $       177  sim
+            2027-09  h=13.0  0.3816 (serie, T2_mean)  ×1.032  [-25.3, +24.6] pp  $       162  sim
+            2027-10  h=14.0  0.3816 (serie, T2_mean)  ×1.032  [-25.3, +24.6] pp  $       162  sim
+            2027-11  h=15.0  0.3816 (serie, T2_mean)  ×1.032  [-25.3, +24.6] pp  $       162  sim
+            2027-12  h=16.0  0.3816 (serie, T2_mean)  ×1.032  [-25.5, +24.6] pp  $       162  sim
+            total $2,314 over 16 months
+──────────────────────────────────────────────────────────────────────────
+tables in audit: 20 holdout rows 64

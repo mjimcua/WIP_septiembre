@@ -100,6 +100,44 @@ def weighted_r2_factorial(frame: pd.DataFrame, dimensions: list, value_column: s
     return float(max(0.0, 1 - residual / total)) if total > 0 else 0.0
 
 
+def sequential_collapse_order(base: pd.DataFrame, mandatory_dims: list, value_column: str, weight_column: str) -> list:
+    """The order in which the mandatory dims collapse, decided GREEDILY and SEQUENTIALLY:
+    at every step, among the droppable dims (a `_level_N` only when no `_level_(N+1)`
+    remains), drop the one whose removal from the CURRENT remaining set loses the least
+    R². Extras are not in the model: by the time a mandatory collapses, they are gone.
+
+    WHY NOT the type-II unique contribution: with nested hierarchies (level_1 ⊂ level_2
+    ⊂ level_3) every coarser level has unique ≈ 0 while the finer one is present, and a
+    dim fully carried by an extra (purchase_type by net_new) has unique ≈ 0 too — but the
+    loss of dropping it AFTER the extra is annulled is large. The sequential loss is the
+    question the ladder actually asks at each rung.
+
+    OUTPUT:  list of (dim, loss_of_r2) from the first to collapse to the last.
+    """
+    def family_and_level(dim_name):
+        if "_level_" in dim_name:
+            head, _, tail = dim_name.rpartition("_level_")
+            if tail.isdigit():
+                return head, int(tail)
+        return dim_name, 1
+    remaining, order = list(mandatory_dims), []
+    current_r2 = weighted_r2_factorial(base, remaining, value_column, weight_column) if len(base) >= 3 else 0.0
+    while remaining:
+        droppable = [dim for dim in remaining
+                     if not any(family_and_level(other) == (family_and_level(dim)[0], family_and_level(dim)[1] + 1)
+                                for other in remaining)]
+        losses = {}
+        for dim in droppable:
+            without = [d for d in remaining if d != dim]
+            r2_without = weighted_r2_factorial(base, without, value_column, weight_column) if (len(base) >= 3 and without) else 0.0
+            losses[dim] = max(0.0, current_r2 - r2_without)
+        next_dim = min(droppable, key=lambda d: (losses[d], d))
+        order.append((next_dim, round(losses[next_dim], 4)))
+        remaining.remove(next_dim)
+        current_r2 = weighted_r2_factorial(base, remaining, value_column, weight_column) if (len(base) >= 3 and remaining) else 0.0
+    return order
+
+
 def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, configuration: Config,
                          branch: str = RATE_BRANCH) -> tuple:
     """The three figures per dimension and the pairs, for the rate branch.
@@ -108,7 +146,9 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
              fs_id) · configuration.
     OUTPUT:  (decision_eta2, decision_eta2_pairs).
              decision_eta2: rama, dimension, grupo (mandatory/extra_renovacion),
-             eta2_individual, contribucion_unica, omega2, anulable (0/1: extras only).
+             eta2_individual, contribucion_unica, omega2, anulable (0/1: extras only),
+             orden_colapso (1 = first mandatory to collapse; 0 for extras),
+             perdida_secuencial (R² lost when it collapses, given what remains).
     RULES:   base = trainable series with history, NEUTRAL sign only (timevarying are out
              by doctrine and their series would contaminate the rates); weights = n_propio.
     EDGE CASES: fewer than 3 series → every figure 0 (no evidence, declared).
@@ -132,6 +172,12 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
                          eta2_individual=round(individual, 4), contribucion_unica=round(unique, 4),
                          omega2=round(omega, 4), anulable=int(dim in configuration.extra_renovacion)))
     decision = pd.DataFrame(rows)
+    # the collapse order of the mandatory dims: sequential loss, extras out of the model
+    order = sequential_collapse_order(base, configuration.business_mandatory_dims, "tasa_propia", "n_propio")
+    position = {dim: index + 1 for index, (dim, _) in enumerate(order)}
+    loss = {dim: value for dim, value in order}
+    decision["orden_colapso"] = decision["dimension"].map(position).fillna(0).astype(int)
+    decision["perdida_secuencial"] = decision["dimension"].map(loss)
     pair_rows = []
     if len(base) >= 3:
         for a, b in itertools.combinations(dims, 2):
@@ -279,6 +325,39 @@ def _sign_lookup(units: pd.DataFrame, configuration: Config) -> pd.Series:
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+def print_mix_shift_by_cell(counterfactual: pd.DataFrame, decomposition: pd.DataFrame, top: int = 12) -> None:
+    """Console: the cells where segmenting pays (or costs) and where the mix moves the rate.
+
+    The same view in SQL (Power BI):
+        SELECT c.celda_id, SUM(c.ahorro_usd) ahorro_usd, AVG(c.gana_segmentado) pct_gana,
+               AVG(ABS(m.delta_composicion_pp)) riesgo_mix_pp, AVG(ABS(m.delta_comportamiento_pp)) mov_comportamiento_pp
+        FROM sff_simpson_contrafactual c LEFT JOIN sff_mix_shift m ON m.celda_id = c.celda_id AND m.mes = c.mes
+        GROUP BY c.celda_id ORDER BY ahorro_usd DESC
+    Reading: `ahorro_usd` > 0 → in that cell, predicting the parts with the real weights of
+    the month beat predicting the whole (the flat rate); `riesgo_mix_pp` is how much the
+    cell's aggregate rate moves per month by composition alone (Kitagawa) — the quiet Simpson.
+    """
+    by_cell = counterfactual.groupby("celda_id").agg(ahorro_usd=("ahorro_usd", "sum"), pct_gana=("gana_segmentado", "mean"),
+                                                      meses=("mes", "nunique"))
+    if len(decomposition):
+        mix = decomposition.groupby("celda_id").agg(riesgo_mix_pp=("delta_composicion_pp", lambda s: float(s.abs().mean())),
+                                                    comportamiento_pp=("delta_comportamiento_pp", lambda s: float(s.abs().mean())))
+        by_cell = by_cell.join(mix, how="left")
+    total_saving = by_cell["ahorro_usd"].sum()
+    winners = by_cell[by_cell["ahorro_usd"] > 0]
+    print(f"[1.2] where segmenting pays: {len(winners)} of {len(by_cell)} cells with positive saving hold "
+          f"${winners['ahorro_usd'].sum():,.0f}; the {len(by_cell) - len(winners)} others cost ${-by_cell.loc[by_cell['ahorro_usd'] <= 0, 'ahorro_usd'].sum():,.0f} "
+          f"(net ${total_saving:,.0f})")
+    print("   cell · saving $ · % months segmented wins · mix risk pp (composition) · behaviour pp")
+    for cell, row in by_cell.sort_values("ahorro_usd", ascending=False).head(top).iterrows():
+        print(f"   {str(cell):<40} ${row['ahorro_usd']:>11,.0f}  {row['pct_gana']:5.0%}  "
+              f"{row.get('riesgo_mix_pp', float('nan')):5.2f}  {row.get('comportamiento_pp', float('nan')):5.2f}")
+    worst = by_cell.sort_values("ahorro_usd").head(3)
+    for cell, row in worst.iterrows():
+        if row["ahorro_usd"] < 0:
+            print(f"   {str(cell):<40} ${row['ahorro_usd']:>11,.0f}  {row['pct_gana']:5.0%}  (flat method wins here)")
+
+
 def run_dimension_analysis(units: pd.DataFrame, series_summary: pd.DataFrame, configuration: Config) -> dict:
     """Phase 1.2 end to end. Persists decision_eta2, decision_eta2_pairs,
     simpson_contrafactual, mix_shift_decomposition, timevarying_calibration."""
@@ -292,15 +371,17 @@ def run_dimension_analysis(units: pd.DataFrame, series_summary: pd.DataFrame, co
     configuration.write(calibration, "timevarying_calibration")
     print("[1.2] dimension separation (neutral series, weights = support):")
     for _, row in decision.iterrows():
-        print(f"   {row['dimension']:<26} η²={row['eta2_individual']:.3f}  unique={row['contribucion_unica']:.3f}  ω²={row['omega2']:.3f}"
-              f"  {'(annullable)' if row['anulable'] else ''}")
+        collapse = f"collapses #{row['orden_colapso']} (loses R² {row['perdida_secuencial']:.3f})" if row["orden_colapso"] else "(annullable extra)"
+        print(f"   {row['dimension']:<26} η²={row['eta2_individual']:.3f}  unique={row['contribucion_unica']:.3f}  ω²={row['omega2']:.3f}  {collapse}")
     if len(counterfactual):
         print(f"[1.2] Simpson counterfactual: saving of the segmented method ${counterfactual['ahorro_usd'].sum():,.0f} "
               f"over {counterfactual['mes'].nunique()} walk-forward months · segmented wins in "
               f"{counterfactual['gana_segmentado'].mean():.0%} of cell-months")
+        print_mix_shift_by_cell(counterfactual, decomposition)
     if len(decomposition):
         composition_share = (decomposition["delta_composicion_pp"].abs().sum()
                              / max((decomposition["delta_composicion_pp"].abs() + decomposition["delta_comportamiento_pp"].abs()).sum(), 1e-9))
-        print(f"[1.2] mix-shift: {composition_share:.0%} of the month-to-month movement of cell rates is composition, not behaviour")
+        print(f"[1.2] mix-shift: {composition_share:.0%} of the month-to-month movement of cell rates is composition, not behaviour "
+              f"(Σ|composición| / (Σ|composición| + Σ|comportamiento|) over every cell-month of the window)")
     return dict(decision_eta2=decision, decision_eta2_pairs=pairs, simpson_contrafactual=counterfactual,
                 mix_shift_decomposition=decomposition, timevarying_calibration=calibration)

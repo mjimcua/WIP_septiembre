@@ -6,7 +6,7 @@ bandas asimétricas calibradas, uplift por celda, y horizonte extendido con pipe
 simulada. Todo en un directorio plano; nada del legacy.
 
 Lee primero `POR_QUE_ESTE_FORECAST.md` (por qué así) y `GUION_V3.md` (qué hace cada
-pieza); `GLOSARIO.md` para los términos; `PARAMETROS.md` para cada parámetro y su valor
+pieza); `GLOSARIO.md` para los términos; `METODOS.md` para cada técnica estadística explicada con números (cuadratura, credibilidad, η², Kitagawa, φ, logit, bandas); `PARAMETROS.md` para cada parámetro y su valor
 por defecto justificado; `AUDITORIA.md` para auditar una serie (Power BI y notebook);
 `ANALYSIS_POINTS.md` para qué mirar cuando corra sobre datos reales; `PENSAR_JUNTOS.md`
 para las preguntas abiertas de ajuste; `USO_NOTEBOOK.md` para trabajar desde un notebook.
@@ -103,8 +103,7 @@ que lleve el id (`Config.stamp_derived_keys`); `key_bridge` une todos por fila d
 
 ## Niveles de riesgo
 
-A propio · B prestado (peldaño ≤ 2) · C lejano (peldaño ≥ 3 o neutra bajo suelo) ·
-D sin historia · S con signo bajo suelo · M signo mixto · N sin impacto · T universo ts.
+A propio (peldaño 0, ≥ 12 meses) · A2 propio corto (peldaño 0, < 12 meses) · B prestado (peldaño 1-2: pariente que comparte todas las mandatory) · C lejano (peldaño ≥ 3: celda o mandatory colapsada) · S señal bajo suelo (con flag, celda × signo sin llegar al suelo: mejor tasa de su signo, ruidosa) · M signo mixto · D sin historia · N sin impacto · T universo ts. La consola imprime la leyenda completa tras la tabla de dinero (`LEVEL_DEFINITIONS`).
 
 ## Divergencias declaradas respecto a DISENO_SPLIT / DISENO_V2
 
