@@ -50,6 +50,16 @@ DEFAULT_ACQUISITION_FACTOR = 1.0
 # EXTENDED HORIZON
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+def term_months_of(frame: pd.DataFrame, configuration: Config) -> pd.Series:
+    """The renewal term in months of every row: from `term_column` mapped through
+    `term_months_by_value`, else the default `renewal_term_months`."""
+    default = configuration.renewal_term_months
+    if configuration.term_column and configuration.term_column in frame.columns and configuration.term_months_by_value:
+        return frame[configuration.term_column].astype(str).map(
+            {str(k): int(v) for k, v in configuration.term_months_by_value.items()}).fillna(default).astype(int)
+    return pd.Series(default, index=frame.index, dtype=int)
+
+
 def acquisition_factor_by_series(units: pd.DataFrame, configuration: Config) -> tuple:
     """Median of pipeline(t) / renewed(t − term) per series, and the global one.
 
@@ -60,12 +70,14 @@ def acquisition_factor_by_series(units: pd.DataFrame, configuration: Config) -> 
     """
     if configuration.acquisition_factor is not None:
         return pd.Series(dtype=float), float(configuration.acquisition_factor)
-    term, period = configuration.renewal_term_months, configuration.period_col
-    history = units[(units[configuration.dataset_role_col] != PROJECTION_ROLE) & (units["sintetica"] == 0)]
+    period = configuration.period_col
+    history = units[(units[configuration.dataset_role_col] != PROJECTION_ROLE) & (units["sintetica"] == 0)].copy()
+    history["_term"] = term_months_of(history, configuration)
     monthly = history.groupby(["fs_id", period], as_index=False).agg(
-        pipe=(configuration.pipeline_units_col, "sum"), ren=(configuration.renewed_units_col, "sum"))
-    earlier = monthly[["fs_id", period, "ren"]].copy()
-    earlier[period] = earlier[period] + term
+        pipe=(configuration.pipeline_units_col, "sum"), ren=(configuration.renewed_units_col, "sum"), term=("_term", "first"))
+    earlier = monthly[["fs_id", period, "ren", "term"]].copy()
+    earlier[period] = earlier[period] + earlier["term"].astype(int)
+    earlier = earlier.drop(columns="term")
     pairs = monthly.merge(earlier.rename(columns={"ren": "ren_earlier"}), on=["fs_id", period])
     pairs = pairs[pairs["ren_earlier"] > 0]
     pairs["ratio"] = pairs["pipe"] / pairs["ren_earlier"]
@@ -76,7 +88,7 @@ def acquisition_factor_by_series(units: pd.DataFrame, configuration: Config) -> 
 
 
 def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_estimates: pd.DataFrame,
-                          configuration: Config) -> pd.DataFrame:
+                          configuration: Config, decision_uplift: pd.DataFrame = None) -> pd.DataFrame:
     """Simulated future rows from the end of the known pipeline to `extended_horizon_end`.
 
     INPUT:   fine_table (phase 0, projection rows are the template) · units (history for
@@ -85,10 +97,16 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     OUTPUT:  rows with the fine table's columns + simulada = 1, factor_adquisicion; empty
              when no extension is configured.
     RULES:   for month m beyond the known pipeline, per series and combination:
-             units(m) = renewed(m − term) × factor, where renewed(m − term) is observed
+             units(m) = renewed(m − term) × factor, with the term of EACH ROW (term_column /
+             term_months_by_value, else renewal_term_months); renewed(m − term) is observed
              when m − term has truth, or expected (pipeline × tasa_estimada) when it is a
-             projection or an already simulated month; pipeline$ = units × the
-             combination's AUV at m − term.
+             projection or an already simulated month; pipeline$ = units × the RENEWED
+             price: the observed renewed AUV of the source row when it has truth, else its
+             pipeline AUV × the uplift of its cell (decision_uplift). A contract renewed in
+             2026 falls due in 2027 at the price it renewed at; the 2027 forecast applies
+             rate × uplift again on top. Only rows matching `extension_row_filter` re-enter
+             (e.g. term_level_2 = "1 year"): multi-year contracts renewed now fall due beyond
+             the horizon and their known expirations are already in the pipeline.
     EDGE CASES: a series with no row at m − term contributes nothing at m.
     NOTE:    vectorized month by month (one frame operation per simulated month).
     """
@@ -105,10 +123,20 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     known = fine_table.copy()
     known["fs_id"] = join_columns(known, configuration.rate_series_columns)
     known["simulada"] = 0
-    term = configuration.renewal_term_months
+    known["_term"] = term_months_of(known, configuration)
+    known["_due"] = known[period] + known["_term"]              # the month this row's renewals fall due again
+    keep = pd.Series(True, index=known.index)
+    for column, allowed in (configuration.extension_row_filter or {}).items():
+        if column in known.columns:
+            keep &= known[column].astype(str).isin([str(v) for v in allowed])
+    known.loc[~keep, "_due"] = pd.NaT                           # filtered rows never re-enter
+    uplift_of_cell = {}
+    if decision_uplift is not None and len(decision_uplift):
+        uplift_of_cell = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift"]))
+    known["_uplift_cell_id"] = join_columns(known, configuration.uplift_cell_columns)
     all_rows, simulated_frames = known, []
     for month in pd.period_range(last_known + 1, end, freq="M"):
-        source = all_rows[all_rows[period] == month - term]
+        source = all_rows[all_rows["_due"] == month]
         if source.empty:
             continue
         expected = source[pipe_units] * source["fs_id"].map(rate_by_series).fillna(0.0)
@@ -120,7 +148,11 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         if source.empty:
             continue
         factor = source["fs_id"].map(factors).fillna(global_factor).to_numpy(dtype=float)
-        auv = (source[pipe_usd] / source[pipe_units].clip(lower=1e-9)).to_numpy(dtype=float)
+        pipeline_auv = (source[pipe_usd] / source[pipe_units].clip(lower=1e-9)).to_numpy(dtype=float)
+        observed_auv = (source[configuration.renewed_usd_col] / source[configuration.renewed_units_col].replace(0, np.nan)).to_numpy(dtype=float)
+        cell_uplift = source["_uplift_cell_id"].map(uplift_of_cell).fillna(1.0).to_numpy(dtype=float)
+        # the renewed price: observed where there is truth, pipeline AUV × uplift where there is not
+        auv = np.where(np.isfinite(observed_auv) & ~use_expected[keep].to_numpy(), observed_auv, pipeline_auv * cell_uplift)
         new_rows = source.copy()
         new_rows[period], new_rows[role] = month, PROJECTION_ROLE
         new_rows[pipe_units] = renewed * factor
@@ -129,6 +161,7 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
             new_rows[column] = np.nan
         new_rows[configuration.current_month_col] = 0
         new_rows["simulada"], new_rows["factor_adquisicion"] = 1, np.round(factor, 4)
+        new_rows["_due"] = new_rows[period] + new_rows["_term"]
         new_rows["fu_id"] = new_rows["fs_id"] + "|" + str(month)
         new_rows["fu_key"] = new_rows["fu_id"].map(hash_key)
         new_rows["fu_comb_key"] = (new_rows["fu_id"] + "||" + new_rows["comb_id"].astype(str)).map(hash_key)
@@ -137,9 +170,13 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     if not simulated_frames:
         return pd.DataFrame()
     extended = pd.concat(simulated_frames, ignore_index=True)
+    terms_used = sorted(extended["_term"].unique())
+    extended = extended.drop(columns=["_term", "_due", "_uplift_cell_id"])
     print(f"[5] extended horizon {last_known + 1} → {end}: {len(extended):,} simulated rows · "
           f"acquisition factor global {global_factor:.3f} (per-series for {len(factors)} series) · "
-          f"re-entry after {term} months")
+          f"re-entry after {terms_used} months" + (f" (from '{configuration.term_column}')" if configuration.term_column else "")
+          + (f" · only rows with {configuration.extension_row_filter}" if configuration.extension_row_filter else "")
+          + " · valued at the renewed price (AUV × uplift)")
     return extended
 
 
@@ -148,14 +185,14 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def rate_forecast_by_estimation_id(monthly_series: dict, decision_technique: pd.DataFrame,
-                                   decision_dynamics: pd.DataFrame, target_months: list) -> pd.DataFrame:
+                                   decision_dynamics: pd.DataFrame, target_months: list, requires_firm: bool = True) -> pd.DataFrame:
     """The rate predicted at every target month for every estimation id with its technique.
 
     OUTPUT:  DataFrame(id_estimacion, period, tasa_pred, h, tecnica). h = months from the
              id's last month with truth.
     """
     technique_by_id = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica"]))
-    labels = {row["id_estimacion"]: dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]))
+    labels = {row["id_estimacion"]: dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]), requiere_firme=requires_firm)
               for _, row in decision_dynamics.iterrows()}
     rows = []
     for estimation_id, monthly in monthly_series.items():
@@ -201,7 +238,7 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
     rows["id_estimacion"] = rows["id_estimacion"].fillna(rows["fs_id"])
     # step 1: the technique prediction of the estimation id at the row's month
     predictions = rate_forecast_by_estimation_id(monthly_series, decision_technique, decision_dynamics,
-                                                 sorted(rows[period].unique()))
+                                                 sorted(rows[period].unique()), configuration.seasonal_requires_firm)
     rows = rows.merge(predictions, on=["id_estimacion", period], how="left")
     technique_origin = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica_origen"]))
     # step 2-4: the series estimate, the cell mean, the global mean
@@ -327,7 +364,7 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     period = configuration.period_col
     known_future = fine_table[fine_table[configuration.dataset_role_col] == PROJECTION_ROLE].copy()
     known_future["simulada"] = 0
-    extended = extend_forecast_units(fine_table, units, series_estimates, configuration)
+    extended = extend_forecast_units(fine_table, units, series_estimates, configuration, decisions["decision_uplift"])
     if len(extended):
         configuration.write(extended.assign(**{period: extended[period].astype(str)}), "forecast_units_extended")
         future = pd.concat([known_future, extended], ignore_index=True)

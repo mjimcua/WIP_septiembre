@@ -92,6 +92,16 @@ def test_analysis_taxonomy_1() -> dict:
     RECORDER.check(horizon["period"].min() == "2026-09" and horizon["period"].max() == "2027-12" and len(horizon) == 16,
                    "the forecast covers 2026-09 (current month) to 2027-12")
     RECORDER.check((horizon.loc[horizon["period"] >= "2027-01", "pct_simulado"] == 100).all(), "2027 is built entirely on simulated pipeline")
+    # the sheet resolves any key to a series and returns its tables and summary
+    from sheet import sheet
+    from config import hash_key
+    with quiet():
+        by_id = sheet("EU|0|0|0|0|A|tele", results=results, figure=False)
+        by_estimation = sheet(hash_key("EU|SIG=neg|A|web"), results=results, figure=False)
+    RECORDER.check(by_id["keys"]["kind"] == "fs_key" and "SERIES EU|0|0|0|0|A|tele" in by_id["summary"] and len(by_id["tables"]["parent_ladder"]) >= 3,
+                   "sheet(fs_id): the series' tables and summary")
+    RECORDER.check(by_estimation["keys"]["kind"] == "estimacion_key" and len(by_estimation["keys"]["members"]) == 4,
+                   "sheet(estimacion_key): resolves the pool and lists its 4 member series")
     validation = results["validation"]
     RECORDER.check(not ((validation["estado"] == "FAIL") & validation["familia"].isin(["INTEGRITY", "DOCTRINE"])).any(),
                    "the validation panel has no INTEGRITY / DOCTRINE failure")

@@ -92,9 +92,11 @@ def test_dynamics() -> None:
 
 def test_techniques() -> None:
     RECORDER.start_block("T · techniques")
-    RECORDER.check("T7_seasonal_idx" not in techniques.eligible_techniques(24, dict(estacional=0, tendencia=0))
-                   and "T7_seasonal_idx" in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0)),
-                   "seasonal techniques need the 'estacional' label")
+    RECORDER.check("T7_seasonal_idx" not in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0))
+                   and "T7_seasonal_idx" in techniques.eligible_techniques(24, dict(estacional=2, tendencia=0)),
+                   "seasonal techniques need FIRM seasonality (2 cycles) by default; tentative (1 cycle) is not enough")
+    RECORDER.check("T7_seasonal_idx" in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0, requiere_firme=False)),
+                   "…unless seasonal_requires_firm is off")
     RECORDER.check("T11_holt_winters" not in techniques.eligible_techniques(20, dict(estacional=2, tendencia=0))
                    and "T11_holt_winters" in techniques.eligible_techniques(24, dict(estacional=2, tendencia=0)),
                    "Holt-Winters needs 24 months even when seasonal")

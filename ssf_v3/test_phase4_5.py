@@ -112,7 +112,13 @@ def test_extended_horizon() -> None:
         RECORDER.check(abs(s1_2026_04["total_tr_units"] - source["total_renewed_units"] * factor) < 1e-6,
                        "units(2026-04) = renewed(2025-04, observed) × acquisition factor")
         RECORDER.check(abs(factor - 200 / (200 * 0.8)) < 0.15, f"the factor ≈ pipeline / renewed one term earlier ≈ 1.25 ({factor:.3f})")
-        RECORDER.check(abs(s1_2026_04["total_tr_usd"] / s1_2026_04["total_tr_units"] - 20.0) < 1e-9, "the simulated row keeps the combination's AUV")
+        # the source (2025-04) has truth: the simulated pipeline is valued at the OBSERVED renewed AUV (20 × 1.05 = 21)
+        RECORDER.check(abs(s1_2026_04["total_tr_usd"] / s1_2026_04["total_tr_units"] - 21.0) < 1e-9,
+                       "the simulated row is valued at the renewed price (observed renewed AUV 21, not the pipeline AUV 20)")
+        # a filter keeps multi-year rows out: with channel as a stand-in for the term column, only 'web' re-enters
+        filtered = run_to_assembly(ladder_config(folder, extended_horizon_end="2026-09", extension_row_filter={"channel": ["web"]}), [1, 2, 3])
+        RECORDER.check(set(filtered["forecast"]["forecast_units_extended"]["channel"]) == {"web"},
+                       "extension_row_filter: only the allowed rows re-enter the simulated pipeline")
         RECORDER.check(extended["fu_comb_key"].is_unique and not extended["fu_key"].isin(fine["fu_key"]).any(),
                        "simulated rows get new keys that do not collide with the raw")
         # 2027-01 would need 2026-01 (a projection month): the expected renewals are used instead

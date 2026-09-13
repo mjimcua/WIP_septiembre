@@ -327,6 +327,13 @@ class Config:
     # Months of history a series needs to be level "A_propio" even when it has support:
     # one full year, so a seasonal series has seen every season.
     own_level_min_history_months: int = 12
+    # How far a series WITH SIGN may climb beyond its mandatory cell × sign, keeping the
+    # sign: it may collapse mandatory dims in the sequential order while the CUMULATIVE R²
+    # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the sealed doctrine (the
+    # ladder of a signed series ends at the cell × sign). 0.05 lets it collapse the dims
+    # that separate almost nothing (in Kamelot: band_2, band_1, product_2, product_1),
+    # i.e. cohorts nearly identical — pooled signal, not Simpson. Watch S_signo_bajo_suelo.
+    signed_ladder_max_loss: float = 0.0
 
     # ─── phase 2 · dynamics (ANALYSIS) ─────────────────────────────────────────────
     # Months of history before seasonality or trend are even measured (13 = one full
@@ -338,9 +345,15 @@ class Config:
     # what sampling alone would produce. Lower to 1.5 to be more sensitive (more series
     # compete with seasonal/trend techniques; the backtest still has the last word).
     signal_multiple_of_bound: float = 2.0
-    # φ (observed variance / binomial variance) above which the console says "there is
-    # an engine". Informational: it flags where a complex technique can pay off.
+    # φ (observed variance / binomial variance) above which "there is an engine". A
+    # series is declared seasonal or trending ONLY above it: with φ ≈ 1 the rate only
+    # samples, and any amplitude or slope measured on it is noise (in Kamelot, hundreds
+    # of ids with φ < 1.3 showed 20-36 pp of "amplitude" on one cycle: pure sampling).
     phi_engine_threshold: float = 1.5
+    # Seasonal techniques (T6, T7, T11) compete only on FIRM seasonality (≥ 2 full cycles,
+    # estacional = 2). With one cycle the seasonal index is last year's noise: in Kamelot
+    # they scored 5.4 binomial units on the screen against 2.3 for a 3-month average.
+    seasonal_requires_firm: bool = True
     # Horizon after which a detected trend is considered fully damped (the inference
     # cap): 6 months. Beyond it the techniques' own damping (φ=0.9) has removed most of
     # the trend anyway; the label is what the forecast_by_level reader sees.
@@ -380,6 +393,11 @@ class Config:
     # tenth of a sampling error: enough to ignore luck, small enough to let real signal
     # through. The leaderboard (P3.1) shows how far apart techniques really are.
     challenger_margin_normalized: float = 0.10
+    # Among techniques within the margin of the best, the richer family (time series >
+    # smoothing > average > naive) wins — but only when the id has at least this many
+    # months of history: a time-series technique chosen on 14 months is a story, not a
+    # model. 24 = two full cycles. Below it, the simplest technique within the margin wins.
+    richer_family_min_history_months: int = 24
     # Predictions an (id, h) needs for its OWN error quantiles; below it the band comes
     # from the family (same technique, every id). 20 predictions make a p5/p95 that is
     # not just the extremes.
@@ -393,6 +411,12 @@ class Config:
     intermittent_zero_share: float = 0.30
 
     # ─── phase 4 · uplift (RUN) ─────────────────────────────────────────────────────
+    # The mandatory dims that open an uplift cell. None = every mandatory dim (cell =
+    # mandatory + extra_revalorizacion). With 10 mandatory dims that made 25,710 cells in
+    # Kamelot, 70 % below the floor: a subset (e.g. regional_level_1, product_level_1,
+    # purchase_type, term_level_2) keeps the revaluation drivers and gives cells with
+    # enough renewers. Every dim listed must be a mandatory dim.
+    uplift_mandatory_dims: Optional[list] = None
     # Renewers a cell needs to use its own ratio; below it the parent's (starting-point
     # extras kept) or the mandatory cell's. 30, like the rate floor: an uplift is a
     # ratio of the money of ~30 renewers before it stops jumping.
@@ -416,13 +440,27 @@ class Config:
     # None = no extension. Everything built on simulated rows is flagged (simulada = 1)
     # and reported (horizon_report_total.pct_simulado).
     extended_horizon_end: Optional[str] = None
-    # A renewed contract re-enters the pipeline after this many months: the term. 12 for
-    # yearly subscriptions. A mixed-term portfolio needs a term column (not modelled yet).
+    # A renewed contract re-enters the pipeline after its term. `renewal_term_months` is
+    # the default (12 = yearly). A mixed-term portfolio declares the column that carries
+    # the term and the months of each value: e.g. term_column = "term_level_2",
+    # term_months_by_value = {"1 year": 12, "2 year": 24, "3 year": 36}; values not in the
+    # map fall back to the default. Used by the extended horizon and the acquisition factor.
     renewal_term_months: int = 12
+    term_column: Optional[str] = None
+    term_months_by_value: dict = field(default_factory=dict)
     # pipeline(m) = renewed(m − term) × factor. None = estimated from history per series
     # (median of pipeline(t) / renewed(t − term) = 1 + acquisitions / renewals; global
     # fallback). Set a number to impose a business assumption on acquisition.
     acquisition_factor: Optional[float] = None
+    # Only rows matching this filter re-enter the simulated pipeline: column → allowed
+    # values, e.g. {"term_level_2": ["1 year"]}. Multi-year contracts renewed now fall due
+    # beyond the horizon and their known expirations are already in the pipeline; only
+    # the 12-month ones (renewals AND acquisitions) shape next year. {} = every row.
+    extension_row_filter: dict = field(default_factory=dict)
+    # The simulated pipeline is valued at the RENEWED price: a contract renewed in 2026 at
+    # pipeline AUV × uplift is worth that when it falls due in 2027 (observed renewed AUV
+    # where there is truth, pipeline AUV × the cell's uplift where there is not). The 2027
+    # forecast then applies rate × uplift again on that revalued pipeline.
     # Pairs (t, t − term) a series needs for its own acquisition factor; below it the
     # global one. 3 = a median that is not a single point.
     acquisition_min_pairs: int = 3
@@ -431,6 +469,11 @@ class Config:
     # total is flagged in horizon_report_total.banda_monotona. Per id the band never
     # narrows (by construction); this is a mix signal, not a calibration one.
     band_narrowing_tolerance_pct: float = 1.0
+
+    # ─── console ───────────────────────────────────────────────────────────────────
+    # Rows printed per listing (ids with an engine, cells, champions...). The tables hold
+    # everything; the console shows the top by support or money. 15 fits a screen.
+    console_top_rows: int = 15
 
     # ─── governance ────────────────────────────────────────────────────────────────
     # Version (as-of) of the model that produces each timevarying flag, stamped on the
@@ -616,7 +659,11 @@ class Config:
         = mandatory + extra_revalorizacion. The uplift has no time axis: it is estimated
         over every month at once, so its unit is a static cell, not a series.
         """
-        return self.business_mandatory_dims + self.extra_revalorizacion
+        mandatory = self.uplift_mandatory_dims if self.uplift_mandatory_dims else self.business_mandatory_dims
+        unknown = [d for d in mandatory if d not in self.business_mandatory_dims]
+        if unknown:
+            raise ValueError(f"uplift_mandatory_dims must be mandatory dims; not mandatory: {unknown}")
+        return list(mandatory) + self.extra_revalorizacion
 
     @property
     def core_measures(self) -> list:

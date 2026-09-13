@@ -110,14 +110,17 @@ def relative_pattern(series_values: dict, configuration: Config, sign: str,
 
 
 def build_relatives(series_values: dict, sign: str, configuration: Config,
-                    annullable_extra, mandatory_collapse_order: list) -> list:
+                    annullable_extra, mandatory_collapse_order: list, collapse_loss: dict = None) -> list:
     """The ordered list of relatives of one series (pure: no data, no console).
 
     INPUT:   series_values — column → value of the series · sign — neutral/neg/pos/mixed ·
              configuration · annullable_extra — the extra_renovacion with the lowest
              unique η² (None if no extras) · mandatory_collapse_order.
     OUTPUT:  list of (rung, description, pattern). Rung 0 is the series itself.
-    RULES:   see the module docstring. A `mixed` series has only rung 0.
+             collapse_loss — dim → R² lost when it collapses (decision_eta2.perdida_secuencial).
+    RULES:   see the module docstring. A `mixed` series has only rung 0. A signed series
+             stops at the cell × sign unless `signed_ladder_max_loss` > 0: then it keeps
+             collapsing mandatory dims (sign kept) while the cumulative loss ≤ that cap.
     """
     relatives = [(0, "itself", relative_pattern(series_values, configuration, sign, set(), set(), False))]
     if sign == SIGN_MIXED:
@@ -131,12 +134,16 @@ def build_relatives(series_values: dict, sign: str, configuration: Config,
     all_extras = set(configuration.extra_renovacion)
     relatives.append((3, "mandatory cell × sign",
                       relative_pattern(series_values, configuration, sign, all_extras, set(), True)))
-    if sign != SIGN_NEUTRAL:
-        return relatives                          # TOP for signed series
-    collapsed = set()
+    collapsed, cumulative_loss = set(), 0.0
     for rung_offset, dim in enumerate(mandatory_collapse_order, start=4):
+        if sign != SIGN_NEUTRAL:
+            if configuration.signed_ladder_max_loss <= 0:
+                break                              # sealed doctrine: the cell × sign is the TOP
+            cumulative_loss += float((collapse_loss or {}).get(dim, 1.0))
+            if cumulative_loss > configuration.signed_ladder_max_loss + 1e-12:
+                break                              # cohorts start to differ: stop here, sign kept
         collapsed = collapsed | {dim}
-        relatives.append((rung_offset, f"mandatory '{dim}' collapsed",
+        relatives.append((rung_offset, f"mandatory '{dim}' collapsed" + (" (sign kept)" if sign != SIGN_NEUTRAL else ""),
                           relative_pattern(series_values, configuration, sign, all_extras, set(collapsed), True)))
     return relatives
 
@@ -146,7 +153,7 @@ def build_relatives(series_values: dict, sign: str, configuration: Config,
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def series_patterns_table(series_summary: pd.DataFrame, units: pd.DataFrame, configuration: Config,
-                          annullable_extra, mandatory_collapse_order: list) -> pd.DataFrame:
+                          annullable_extra, mandatory_collapse_order: list, collapse_loss: dict = None) -> pd.DataFrame:
     """Every (fs_id, rung, pattern) of every series: the map used to compute pools."""
     one_per_series = (units[units["fs_id"].isin(series_summary["fs_id"])]
                       .drop_duplicates("fs_id").set_index("fs_id")[configuration.rate_series_columns])
@@ -154,7 +161,7 @@ def series_patterns_table(series_summary: pd.DataFrame, units: pd.DataFrame, con
     rows = []
     for series_id, values in one_per_series.iterrows():
         for rung, description, pattern in build_relatives(values.to_dict(), sign_by_series.get(series_id, SIGN_NEUTRAL),
-                                                          configuration, annullable_extra, mandatory_collapse_order):
+                                                          configuration, annullable_extra, mandatory_collapse_order, collapse_loss):
             rows.append(dict(fs_id=series_id, peldano=rung, descripcion=description, patron=pattern))
     return pd.DataFrame(rows)
 
@@ -415,10 +422,12 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
         order += [d for d in configuration.business_mandatory_dims if d not in order]     # safety: never lose a dim
     else:                                                                                   # older decision tables
         order = collapse_order(configuration.business_mandatory_dims, unique)
+    collapse_loss = (dict(zip(rate_branch["dimension"], rate_branch["perdida_secuencial"].fillna(1.0)))
+                     if "perdida_secuencial" in rate_branch.columns else {})
     extras = [d for d in configuration.extra_renovacion]
     annullable = min(extras, key=lambda d: unique.get(d, 1.0)) if extras else None
     trainable = series_summary[(series_summary["ruta"] == ROUTE_TRAINABLE) & (series_summary["universo"] == UNIVERSE_NORMAL)]
-    patterns = series_patterns_table(trainable, units, configuration, annullable, order)
+    patterns = series_patterns_table(trainable, units, configuration, annullable, order, collapse_loss)
     pools = pool_support(units, patterns, configuration)
     decision_support, parent_ladder = climb_ladder(trainable, patterns, pools, configuration)
     k_by_relative = estimate_credibility_k(series_summary, decision_support, configuration)

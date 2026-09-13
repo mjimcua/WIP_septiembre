@@ -181,6 +181,14 @@ def test_build_relatives() -> None:
     RECORDER.check([r[2] for r in neutral] == ["EU|0|0|web", "EU|SIG=neutral|*", "EU|SIG=neutral|*", "*|SIG=neutral|*"],
                    "neutral series: itself → extra annulled → cell (neutrals) → mandatory collapsed (neutrals)")
     RECORDER.check(all("SIG=neutral" in r[2] for r in neutral[1:]), "a neutral series never loses its 'neutral' sign")
+    # with a loss cap, a signed series may collapse the mandatory dims that separate little, sign kept
+    with tempfile.TemporaryDirectory() as folder:
+        permissive = ladder_config(folder, signed_ladder_max_loss=0.05)
+    climbing = build_relatives(values, "neg", permissive, "channel", ["region"], collapse_loss={"region": 0.02})
+    RECORDER.check([r[2] for r in climbing][-1] == "*|SIG=neg|*" and "sign kept" in climbing[-1][1],
+                   "signed_ladder_max_loss=0.05: 'region' (loses 0.02) collapses with the sign kept")
+    stopped = build_relatives(values, "neg", permissive, "channel", ["region"], collapse_loss={"region": 0.30})
+    RECORDER.check([r[2] for r in stopped][-1] == "EU|SIG=neg|*", "…but not when the loss (0.30) exceeds the cap")
     mixed = build_relatives(dict(region="EU", softcancel=1, autorenew=1, channel="web"), "mixed", configuration, "channel", ["region"])
     RECORDER.check(len(mixed) == 1 and mixed[0][2] == "EU|1|1|web", "a mixed-sign series has no relative but itself")
 

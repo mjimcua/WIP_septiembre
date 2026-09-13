@@ -13,6 +13,11 @@ are used WHEN THEY CAN BE, and the champion is not chosen by luck when they cann
 
 Families (for tie-breaking, richer first): time_series > smoothing > average > naive.
 
+MIXED techniques (T15, T16): a seasonal SHAPE on a RECENT LEVEL. When the level of a
+series moves (a regime, a portfolio move) the whole-history seasonal techniques miss the
+level and the short-window ones miss the season; these deseasonalize the history, take
+the recent level, and put the target month's season back on top.
+
 Numpy only. Additional techniques (SARIMA, ETS auto...) plug in by adding an entry to
 CATALOGUE with the same signature: f(logit_series: np.ndarray, month_numbers: np.ndarray
 of calendar months 1..12, horizon: int, dynamics: dict) → float (logit). Calendar months
@@ -161,6 +166,28 @@ def t13_croston_sba(y, months, h, dyn):
     return float(logit(np.clip(mean_active * share * (1 - 0.5 * (1 - share)), 1e-3, 1 - 1e-3)))
 
 
+def deseasonalized(y, months):
+    """The series minus its additive seasonal index (logit): the LEVEL without the season."""
+    profile = seasonal_profile_logit(months, y)
+    return y - profile[months - 1], profile
+
+
+def t15_recent_level_seasonal(y, months, h, dyn):
+    """Mixed: the level of the last 3 months (deseasonalized) + the seasonal index of the
+    target month. Keeps the SHAPE of the season while following a level that moved."""
+    level_series, profile = deseasonalized(y, months)
+    return float(np.mean(level_series[-3:]) + profile[target_calendar_month(months, h) - 1])
+
+
+def t16_ses_seasonal(y, months, h, dyn):
+    """Mixed: simple exponential smoothing of the deseasonalized level + seasonal index."""
+    level_series, profile = deseasonalized(y, months)
+    level = level_series[0]
+    for value in level_series[1:]:
+        level = SES_ALPHA * value + (1 - SES_ALPHA) * level
+    return float(level + profile[target_calendar_month(months, h) - 1])
+
+
 def t14_temporal_credibility(y, months, h, dyn):
     """Recent window vs whole history, blended with z = n/(n+k) on the number of recent months."""
     recent = y[-RECENT_WINDOW_MONTHS:]
@@ -186,6 +213,8 @@ CATALOGUE = {
     "T12_theta":        ("time_series", "Theta: damped trend + SES",                  12, None,         t12_theta),
     "T13_croston_sba":  ("smoothing",   "SBA for intermittent series",                8,  "intermitente", t13_croston_sba),
     "T14_temporal_cred":("average",     "recent window with temporal credibility",    6,  None,         t14_temporal_credibility),
+    "T15_level_seasonal":("time_series", "last-3-months level (deseasonalized) + seasonal index", 13, "estacional", t15_recent_level_seasonal),
+    "T16_ses_seasonal": ("time_series", "SES level (deseasonalized) + seasonal index", 13, "estacional", t16_ses_seasonal),
 }
 
 
@@ -200,11 +229,12 @@ def eligible_techniques(history_months: int, dynamics: dict) -> list:
 
     INPUT:   history_months · dynamics — dict with estacional (0/1/2), tendencia (−1/0/1),
              intermitente (0/1); missing keys count as 0.
-    RULES:   min history; `estacional` techniques need estacional ≥ 1; `tendencia`
+    RULES:   min history; `estacional` techniques need estacional = 2 (firm; ≥ 1 when
+             dynamics["requiere_firme"] is False); `tendencia`
              techniques need tendencia ≠ 0; `intermitente` techniques need intermitente = 1.
              The challenger T2_mean is always eligible.
     """
-    labels = {"estacional": int(dynamics.get("estacional", 0) or 0) >= 1,
+    labels = {"estacional": int(dynamics.get("estacional", 0) or 0) >= (2 if dynamics.get("requiere_firme", True) else 1),
               "tendencia": int(dynamics.get("tendencia", 0) or 0) != 0,
               "intermitente": int(dynamics.get("intermitente", 0) or 0) == 1}
     eligible = []

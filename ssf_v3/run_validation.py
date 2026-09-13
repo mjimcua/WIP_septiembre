@@ -92,7 +92,11 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
     if ladder is not None and support is not None and len(ladder):
         signed = support[support["signo"].isin(["neg", "pos"])]
         climbed_above_cell = int((signed["peldano"] > 3).sum())
-        rows.append(check_row("signed series never climb above their cell", FAMILY_DOCTRINE, climbed_above_cell, "= 0", climbed_above_cell == 0))
+        if configuration.signed_ladder_max_loss <= 0:
+            rows.append(check_row("signed series never climb above their cell", FAMILY_DOCTRINE, climbed_above_cell, "= 0", climbed_above_cell == 0))
+        else:
+            rows.append(check_row("signed series climbing above their cell (sign kept)", FAMILY_QUALITY, climbed_above_cell,
+                                  f"allowed: cumulative loss ≤ {configuration.signed_ladder_max_loss}", None))
         neutral_pooled_with_sign = int(support[(support["signo"] == "neutral") & support["id_estimacion"].str.contains("SIG=neg|SIG=pos")].shape[0])
         rows.append(check_row("neutral series never pooled with a sign", FAMILY_DOCTRINE, neutral_pooled_with_sign, "= 0", neutral_pooled_with_sign == 0))
     holdout = artifacts.get("backtest_holdout")

@@ -50,7 +50,11 @@ Página de auditoría recomendada (un slicer sobre `series_card[fs_id]`):
 7. `decision_uplift` de sus celdas.
 8. `forecast_detail` + `forecast_bands`: barras mensuales de `esperado_usd` con la banda, `simulada` sombreado.
 
-## En notebook
+## En notebook: la ficha por clave
+
+`sheet(key, configuration)` acepta cualquiera de las claves del modelo (`fs_key`, `estimacion_key`, `celda_key`, `uplift_cell_key`, `fu_key`, `fu_comb_key`) o un `fs_id`, resuelve a la serie (o a la serie con más dinero del grupo, listando los miembros) y devuelve tablas filtradas, resumen en palabras y la figura. Las claves son enteros (bigint = primeros 12 hex de MD5 del id), los mismos que usa el BI.
+
+## En notebook: la auditoría
 
 ```python
 from audit_series import audit_series

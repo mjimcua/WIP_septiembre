@@ -73,11 +73,13 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 | `analysis_dimensions.py` | ANALYSIS | 1.2 η² individual / contribución única / ω² / pares → `decision_eta2`; contrafactual y Kitagawa; calibración timevarying |
 | `run_support_ladder.py` | RUN | 1.3 parientes, pools, subida, credibilidad, niveles de riesgo, ficha, cadena, informe nivel × $ |
 | `analysis_dynamics.py` | ANALYSIS | 2 serie mensual por id de estimación, φ, gate, perfil estacional (sin tendencia), tendencia → `decision_dynamics` |
-| `techniques.py` | ambos | catálogo de 15 técnicas en logit con elegibilidad; `predict` |
+| `techniques.py` | ambos | catálogo de 17 técnicas en logit (T15/T16: nivel reciente + estación) con elegibilidad; `predict` |
 | `analysis_backtest.py` | ANALYSIS | 3 rolling-origin, selección con retador → `decision_technique`; bandas → `decision_error_bands`; hold-out |
 | `run_uplift.py` | RUN | 4 ratio de sumas por celda, padre por punto de partida, bootstrap → `decision_uplift` |
 | `run_forecast_assembly.py` | RUN | 5 horizonte extendido, ensamblaje con orígenes, bandas, agregación, informes |
 | `run_validation.py` | ambos | panel INTEGRITY / DOCTRINE / QUALITY |
+| `sheet.py` | ambos | `sheet(key, configuration)`: la ficha de lo que señale cualquier clave (fs_key, estimacion_key, celda_key, uplift_cell_key, fu_key, fu_comb_key, o un fs_id): tablas filtradas + resumen en palabras + figura |
+| `diagnostics_plots.py` | análisis | `run_series_diagnostics(configuration, top=10, by="usd")`: 4 figuras compactas de las top series (tasa, pipeline, perfil estacional, hold-out) con sus diagnósticos, para revisar a ojo |
 | `audit_series.py` | ambos | `audit_series(fs_id, configuration)`: la explicación completa de una serie desde las tablas (AUDITORIA.md) |
 | `pipeline.py` | — | `run_analysis`, `run_pipeline`, `key_bridge`, horizontes |
 | `main.py` | — | entrada de producción (`python main.py` / `python main.py analysis`) |

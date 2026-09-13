@@ -2,7 +2,6 @@
 
 Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el código). Cada parámetro: para qué vale, por qué ese valor por defecto y qué mirar antes de cambiarlo. Al final, las constantes de algoritmo que viven en los módulos y NO son configuración.
 
-
 ## the binomial reference (every phase)
 
 | Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
@@ -32,6 +31,7 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 | `k_cred` | `60.0` | Default credibility k (Bühlmann-Straub) when a relative has fewer than 3 siblings with history, so no between/within variance can be estimated. z = n/(n+k): with k=60 a series with n=30 keeps 33 % of its own rate; with n=12, 17 %. 60 ≈ two floors: "you need twice the floor to be believed half". Estimated k's (decision_support.k) override it wherever there are siblings. |
 | `close_relative_max_rung` | `2` | Risk level "B_prestado" vs "C_lejano": a relative at rung ≤ 2 (same sign / extra annulled) is close; from rung 3 (the mandatory cell or above) it is far. The distinction is the money report's, not the estimate's. |
 | `own_level_min_history_months` | `12` | Months of history a series needs to be level "A_propio" even when it has support: one full year, so a seasonal series has seen every season. |
+| `signed_ladder_max_loss` | `0.0` | How far a series WITH SIGN may climb beyond its mandatory cell × sign, keeping the sign: it may collapse mandatory dims in the sequential order while the CUMULATIVE R² lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the sealed doctrine (the ladder of a signed series ends at the cell × sign). 0.05 lets it collapse the dims that separate almost nothing (in Kamelot: band_2, band_1, product_2, product_1), i.e. cohorts nearly identical — pooled signal, not Simpson. Watch S_signo_bajo_suelo. |
 
 ## phase 2 · dynamics (ANALYSIS)
 
@@ -39,7 +39,8 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 |---|---|---|
 | `seasonality_min_months` | `13` | Months of history before seasonality or trend are even measured (13 = one full cycle plus one month, the minimum for a calendar profile). Below it the gate is "temporal" and the mean is used. |
 | `signal_multiple_of_bound` | `2.0` | Seasonal amplitude / yearly slope must exceed this many times the binomial bound of the pool's typical month to be declared. 2× = the movement is at least twice what sampling alone would produce. Lower to 1.5 to be more sensitive (more series compete with seasonal/trend techniques; the backtest still has the last word). |
-| `phi_engine_threshold` | `1.5` | φ (observed variance / binomial variance) above which the console says "there is an engine". Informational: it flags where a complex technique can pay off. |
+| `phi_engine_threshold` | `1.5` | φ (observed variance / binomial variance) above which "there is an engine". A series is declared seasonal or trending ONLY above it: with φ ≈ 1 the rate only samples, and any amplitude or slope measured on it is noise (in Kamelot, hundreds of ids with φ < 1.3 showed 20-36 pp of "amplitude" on one cycle: pure sampling). |
+| `seasonal_requires_firm` | `True` | Seasonal techniques (T6, T7, T11) compete only on FIRM seasonality (≥ 2 full cycles, estacional = 2). With one cycle the seasonal index is last year's noise: in Kamelot they scored 5.4 binomial units on the screen against 2.3 for a 3-month average. |
 | `trend_horizon_months` | `6` | Horizon after which a detected trend is considered fully damped (the inference cap): 6 months. Beyond it the techniques' own damping (φ=0.9) has removed most of the trend anyway; the label is what the forecast_by_level reader sees. |
 
 ## phase 3 · backtest, technique, bands (ANALYSIS)
@@ -64,6 +65,7 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 
 | Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
 |---|---|---|
+| `uplift_mandatory_dims` | `None` | The mandatory dims that open an uplift cell. None = every mandatory dim (cell = mandatory + extra_revalorizacion). With 10 mandatory dims that made 25,710 cells in Kamelot, 70 % below the floor: a subset (e.g. regional_level_1, product_level_1, purchase_type, term_level_2) keeps the revaluation drivers and gives cells with enough renewers. Every dim listed must be a mandatory dim. |
 | `uplift_floor` | `30.0` | Renewers a cell needs to use its own ratio; below it the parent's (starting-point extras kept) or the mandatory cell's. 30, like the rate floor: an uplift is a ratio of the money of ~30 renewers before it stops jumping. |
 | `uplift_cap` | `3.0` | Ratios above this are clipped and flagged `recortado`. 3.0: a renewer paying three times the pipeline AUV is a data problem (a bundle, a currency), not a revaluation. |
 | `uplift_parent_keep_columns` | `[]` | extra_revalorizacion columns KEPT in the parent cell: the "starting point" (e.g. newcust) that a small cell must not lose when it borrows. Empty = the parent is the mandatory cell. |
@@ -75,10 +77,19 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 |---|---|---|
 | `max_forecast_horizon` | `None` | None = derived: months from the last month with truth to the end of the forecast (known projection or extended horizon). Set it only to cut the forecast short. |
 | `extended_horizon_end` | `None` | Simulate the pipeline beyond the known projection up to this month ("2027-12"). None = no extension. Everything built on simulated rows is flagged (simulada = 1) and reported (horizon_report_total.pct_simulado). |
-| `renewal_term_months` | `12` | A renewed contract re-enters the pipeline after this many months: the term. 12 for yearly subscriptions. A mixed-term portfolio needs a term column (not modelled yet). |
+| `renewal_term_months` | `12` | A renewed contract re-enters the pipeline after its term. `renewal_term_months` is the default (12 = yearly). A mixed-term portfolio declares the column that carries the term and the months of each value: e.g. term_column = "term_level_2", term_months_by_value = {"1 year": 12, "2 year": 24, "3 year": 36}; values not in the map fall back to the default. Used by the extended horizon and the acquisition factor. |
+| `term_column` | `None` |  |
+| `term_months_by_value` | `{}` |  |
 | `acquisition_factor` | `None` | pipeline(m) = renewed(m − term) × factor. None = estimated from history per series (median of pipeline(t) / renewed(t − term) = 1 + acquisitions / renewals; global fallback). Set a number to impose a business assumption on acquisition. |
-| `acquisition_min_pairs` | `3` | Pairs (t, t − term) a series needs for its own acquisition factor; below it the global one. 3 = a median that is not a single point. |
+| `extension_row_filter` | `{}` | Only rows matching this filter re-enter the simulated pipeline: column → allowed values, e.g. {"term_level_2": ["1 year"]}. Multi-year contracts renewed now fall due beyond the horizon and their known expirations are already in the pipeline; only the 12-month ones (renewals AND acquisitions) shape next year. {} = every row. |
+| `acquisition_min_pairs` | `3` | The simulated pipeline is valued at the RENEWED price: a contract renewed in 2026 at pipeline AUV × uplift is worth that when it falls due in 2027 (observed renewed AUV where there is truth, pipeline AUV × the cell's uplift where there is not). The 2027 forecast then applies rate × uplift again on that revalued pipeline. Pairs (t, t − term) a series needs for its own acquisition factor; below it the global one. 3 = a median that is not a single point. |
 | `band_narrowing_tolerance_pct` | `1.0` | The total's relative band may narrow from one month to the next when the mix leans toward well-supported series; a narrowing beyond this many percentage points of the total is flagged in horizon_report_total.banda_monotona. Per id the band never narrows (by construction); this is a mix signal, not a calibration one. |
+
+## console
+
+| Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
+|---|---|---|
+| `console_top_rows` | `15` | Rows printed per listing (ids with an engine, cells, champions...). The tables hold everything; the console shows the top by support or money. 15 fits a screen. |
 
 ## governance
 
@@ -87,7 +98,6 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 | `timevarying_model_version` | `{}` | Version (as-of) of the model that produces each timevarying flag, stamped on the calibration table so a flag's realized rate can be compared across versions. |
 | `decision_max_age_months` | `6` | The monthly run warns when the decision tables are older than this. 6 months: two seasons; the ladder and the champions should be re-judged at least twice a year. |
 | `random_seed` | `7` | Seed of every random draw (uplift bootstrap): the same run gives the same band. |
-
 
 ## Constantes de algoritmo (en los módulos, no en Config)
 

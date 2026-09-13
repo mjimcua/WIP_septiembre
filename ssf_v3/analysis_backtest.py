@@ -40,12 +40,12 @@ CHAMPION_ORIGIN = "campeon"
 # (intermittent_zero_share is a Config parameter: see config.py, phase 3)
 
 
-def dynamics_labels(decision_dynamics: pd.DataFrame) -> dict:
-    """id_estimacion → dict(estacional, tendencia, intermitente)."""
+def dynamics_labels(decision_dynamics: pd.DataFrame, requires_firm: bool = True) -> dict:
+    """id_estimacion → dict(estacional, tendencia, intermitente, requiere_firme)."""
     labels = {}
     for _, row in decision_dynamics.iterrows():
         labels[row["id_estimacion"]] = dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]),
-                                            intermitente=0)
+                                            intermitente=0, requiere_firme=requires_firm)
     return labels
 
 
@@ -119,7 +119,7 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
              second stage: champion + challenger only); None = every eligible technique.
     COST:    ≈ targets × horizons × techniques per id. The logit is computed once per id.
     """
-    labels = dynamics_labels(decision_dynamics)
+    labels = dynamics_labels(decision_dynamics, configuration.seasonal_requires_firm)
     gate_by_id = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["gate"]))
     items = list(monthly_series.items())
     parameters = backtest_parameters(configuration)
@@ -139,14 +139,15 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
                                        "tasa_real", "n_real", "err_pp", "se_binom_pp", "err_norm"])
 
 
-def select_technique(backtest_long: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+def select_technique(backtest_long: pd.DataFrame, configuration: Config, history_months: dict = None) -> pd.DataFrame:
     """One champion per estimation id, with its evidence.
 
     OUTPUT:  decision_technique: id_estimacion, tecnica, tecnica_origen (campeon/retador),
              err_norm_medio, err_pp_medio, n_predicciones, retador_err_norm.
     RULES:   score = mean |err_norm| over every horizon and origin. Champion = lowest
              score with n_predicciones ≥ minimum AND score < challenger score − margin;
-             among candidates within the margin of the best, the richest family wins.
+             among candidates within the margin of the best, the richest family wins when
+             the id has ≥ richer_family_min_history_months of history; else the simplest.
     """
     rows = []
     challenger = configuration.challenger_technique
@@ -160,7 +161,9 @@ def select_technique(backtest_long: pd.DataFrame, configuration: Config) -> pd.D
         within_margin = candidates[candidates["err_norm_medio"] <= best_score + configuration.challenger_margin_normalized]
         chosen, origin = challenger, CHALLENGER_ORIGIN
         if len(within_margin) and best_score < challenger_score - configuration.challenger_margin_normalized:
-            chosen = max(within_margin.index, key=lambda t: (family_rank(t), -within_margin.loc[t, "err_norm_medio"]))
+            enough_history = (history_months or {}).get(estimation_id, 0) >= configuration.richer_family_min_history_months
+            rank_sign = 1 if enough_history else -1
+            chosen = max(within_margin.index, key=lambda t: (rank_sign * family_rank(t), -within_margin.loc[t, "err_norm_medio"]))
             origin = CHAMPION_ORIGIN
         row = scores.loc[chosen] if chosen in scores.index else pd.Series(dict(err_norm_medio=np.nan, err_pp_medio=np.nan, n_predicciones=0))
         rows.append(dict(id_estimacion=estimation_id, tecnica=chosen, tecnica_origen=origin,
@@ -246,7 +249,8 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
     configuration.write(technique_dimension(), "dim_tecnica")
     screen_horizons = sorted({h for h in configuration.backtest_screen_horizons if h in horizons} | {horizons[0]})
     screen = rolling_origin_backtest(monthly_series, decision_dynamics, screen_horizons, configuration)
-    decision_technique = select_technique(screen, configuration)
+    history_months = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["meses"]))
+    decision_technique = select_technique(screen, configuration, history_months)
     remaining = [h for h in horizons if h not in screen_horizons]
     chosen_and_challenger = {row["id_estimacion"]: {row["tecnica"], configuration.challenger_technique}
                              for _, row in decision_technique.iterrows()}
@@ -268,9 +272,14 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
         print(f"[3] champions: {decision_technique['tecnica'].value_counts().to_dict()} · "
               f"{(decision_technique['tecnica_origen'] == CHAMPION_ORIGIN).mean():.0%} beat the challenger")
     if len(holdout):
-        by_h = holdout.groupby("h").agg(err_pp=("err_pp", lambda e: float(np.mean(np.abs(e)))), dentro=("dentro_banda", "mean"), n=("err_pp", "size"))
-        print(f"[3] HOLD-OUT (months ≥ {holdout['mes_objetivo'].min()}): chosen technique per id")
+        weighted = holdout.assign(abs_pp=holdout["err_pp"].abs(), w=holdout["n_real"])
+        by_h = weighted.groupby("h").apply(lambda g: pd.Series(dict(
+            err_pp=g["abs_pp"].mean(), err_pp_w=np.average(g["abs_pp"], weights=g["w"]), bias_w=np.average(g["err_pp"], weights=g["w"]),
+            dentro=g["dentro_banda"].mean(), n=len(g))), include_groups=False)
+        print(f"[3] HOLD-OUT (months ≥ {holdout['mes_objetivo'].min()}): chosen technique per id · "
+              f"|error| plain and weighted by units (≈ money) · signed bias (− = under-forecast)")
         for h, row in by_h.iterrows():
-            print(f"   h={h}: mean |error| {row['err_pp']:.2f} pp · {row['dentro']:.0%} inside their band · {int(row['n'])} predictions")
+            print(f"   h={int(h):>2}: |error| {row['err_pp']:.2f} pp · weighted {row['err_pp_w']:.2f} pp · bias {row['bias_w']:+.2f} pp · "
+                  f"{row['dentro']:.0%} inside band · {int(row['n'])} predictions")
     return dict(backtest_long=backtest_long, decision_technique=decision_technique, decision_error_bands=bands,
                 backtest_holdout=holdout)
