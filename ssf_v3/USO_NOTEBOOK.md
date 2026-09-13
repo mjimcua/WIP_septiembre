@@ -1,15 +1,15 @@
 # Ejecutar el pipeline desde un notebook
 
-Todo el código nuevo está en una sola carpeta (`ssf_v3/`). El legacy sigue en `sff_v2/`,
+Todo el código nuevo está en una sola carpeta (`sff_v3/`). El legacy sigue en `sff_v2/`,
 un nivel por encima; el pipeline lo encuentra solo.
 
 ## 1 · Que la carpeta sea importable
 
-Si el notebook está dentro de `ssf_v3/`, no hace falta nada. Si está en otro sitio:
+Si el notebook está dentro de `sff_v3/`, no hace falta nada. Si está en otro sitio:
 
 ```python
 import sys
-sys.path.insert(0, "ruta/al/repo/ssf_v3")
+sys.path.insert(0, "ruta/al/repo/sff_v3")
 ```
 
 ## 2 · Ejecutar
@@ -69,3 +69,15 @@ Tras editar: `reload_project()` y rehaces los `from ... import`.
 - `results = run_pipeline(configuration)` — el run mensual: lee `decision_*` de la base y produce el forecast. Sin análisis previo se niega a correr.
 
 Módulos `run_*.py` = RUN, `analysis_*.py` = ANALYSIS, `techniques.py` y `binomial_reference.py` compartidos. `reload_project()` debe incluirlos todos.
+
+
+## Auditar una serie
+
+```python
+from audit_series import audit_series
+audit = audit_series("EU|0|0|0|0|A|tele", configuration)   # lee las tablas sff_*; ver AUDITORIA.md
+```
+
+## Si aparece `AttributeError: 'SFFConfig' object has no attribute ...`
+
+Tu `config.py` es de una entrega anterior: sustitúyelo por el de esta y reinicia el kernel (`pipeline` lo comprueba al arrancar y lo dice en claro). Tu subclase con `read_raw` no cambia.

@@ -29,12 +29,9 @@ from config import Config
 from run_rate_series import UNIVERSE_NORMAL
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-MIN_MONTHS_FOR_SEASONALITY = 13
-MIN_MONTHS_FOR_PHI = 6
 MONTHS_PER_CYCLE = 12
-SIGNAL_MULTIPLE_OF_BOUND = 2.0        # amplitude or slope must exceed 2× the binomial bound
-PHI_ENGINE_THRESHOLD = 1.5            # above this, "there is an engine" (informational)
-DEFAULT_TREND_HORIZON_MONTHS = 6      # a trend is fully damped after this many months
+# (seasonality_min_months, signal_multiple_of_bound, phi_engine_threshold and
+#  trend_horizon_months are Config parameters: see config.py, phase 2)
 # Gate values are persisted data (Spanish, as in v2)
 GATE_SUPPORT = "soporte"
 GATE_TIME = "temporal"
@@ -73,7 +70,7 @@ def monthly_series_by_estimation_id(units: pd.DataFrame, decision_support: pd.Da
     return series
 
 
-def seasonal_profile(monthly: pd.DataFrame) -> tuple:
+def seasonal_profile(monthly: pd.DataFrame, min_months: int = 13) -> tuple:
     """Index by calendar month (1..12) = mean DETRENDED rate of that month / overall mean.
 
     OUTPUT:  (profile: dict month → index, amplitude_pp, full_cycles).
@@ -82,7 +79,7 @@ def seasonal_profile(monthly: pd.DataFrame) -> tuple:
              With the trend out, only the calendar pattern is left.
     """
     valid = monthly[monthly["rate"].notna()]
-    if len(valid) < MIN_MONTHS_FOR_SEASONALITY:
+    if len(valid) < min_months:
         return {}, 0.0, 0
     overall = float(np.average(valid["rate"], weights=np.maximum(valid["pipe"], 1)))
     x = np.arange(len(valid), dtype=float)
@@ -120,18 +117,18 @@ def diagnose_dynamics(estimation_id: str, monthly: pd.DataFrame, configuration: 
     pooled_rate = float(valid["ren"].sum() / max(valid["pipe"].sum(), 1)) if len(valid) else np.nan
     bound_pp = configuration.z * binomial_se_pp(pooled_rate if np.isfinite(pooled_rate) else 0.5, support)
     phi, sd_obs, sd_bin = overdispersion_phi(valid["rate"].to_numpy(), valid["pipe"].to_numpy())
-    profile, amplitude_pp, cycles = seasonal_profile(monthly)
+    profile, amplitude_pp, cycles = seasonal_profile(monthly, configuration.seasonality_min_months)
     slope_pp = yearly_slope_pp(monthly)
     gate = GATE_MEAN
     seasonal_flag, trend_flag = 0, 0
     if support < configuration.support_floor:
         gate = GATE_SUPPORT
-    elif len(valid) < MIN_MONTHS_FOR_SEASONALITY:
+    elif len(valid) < configuration.seasonality_min_months:
         gate = GATE_TIME
     else:
-        if amplitude_pp > SIGNAL_MULTIPLE_OF_BOUND * bound_pp:
+        if amplitude_pp > configuration.signal_multiple_of_bound * bound_pp:
             seasonal_flag = 2 if cycles >= 2 else 1
-        if abs(slope_pp) > SIGNAL_MULTIPLE_OF_BOUND * bound_pp:
+        if abs(slope_pp) > configuration.signal_multiple_of_bound * bound_pp:
             trend_flag = int(np.sign(slope_pp))
         gate = GATE_SEASONAL if seasonal_flag else (GATE_TREND if trend_flag else GATE_MEAN)
     high = [m for m, v in profile.items() if 100 * (v - 1) * max(pooled_rate, 0.01) > bound_pp] if profile else []
@@ -145,7 +142,7 @@ def diagnose_dynamics(estimation_id: str, monthly: pd.DataFrame, configuration: 
                 ciclos_completos=cycles, perfil_estacional="|".join(f"{m}:{profile[m]:.3f}" for m in sorted(profile)),
                 meses_alto="|".join(map(str, high)), meses_bajo="|".join(map(str, low)),
                 tendencia=trend_flag, pendiente_pp_ano=round(slope_pp, 2),
-                horizonte_max_tendencia=DEFAULT_TREND_HORIZON_MONTHS if trend_flag else 0)
+                horizonte_max_tendencia=configuration.trend_horizon_months if trend_flag else 0)
 
 
 def run_dynamics_analysis(units: pd.DataFrame, decision_support: pd.DataFrame, parent_ladder: pd.DataFrame,
@@ -156,9 +153,9 @@ def run_dynamics_analysis(units: pd.DataFrame, decision_support: pd.DataFrame, p
     decision = pd.DataFrame(rows)
     configuration.write(decision, "decision_dynamics")
     with_history = decision[decision["gate"] != GATE_SUPPORT]
-    engines = with_history[with_history["phi"] > PHI_ENGINE_THRESHOLD]
+    engines = with_history[with_history["phi"] > configuration.phi_engine_threshold]
     print(f"[2] dynamics on {len(decision)} estimation ids · gates {decision['gate'].value_counts().to_dict()} · "
-          f"phi median {with_history['phi'].median():.2f} · {len(engines)} with an engine (phi > {PHI_ENGINE_THRESHOLD})")
+          f"phi median {with_history['phi'].median():.2f} · {len(engines)} with an engine (phi > {configuration.phi_engine_threshold})")
     for _, row in decision[decision["gate"].isin([GATE_SEASONAL, GATE_TREND])].iterrows():
         print(f"   {row['id_estimacion']:<28} {row['gate']:<10} phi={row['phi']}  amp={row['amp_estacional_pp']}pp "
               f"slope={row['pendiente_pp_ano']}pp/yr  cycles={row['ciclos_completos']}")

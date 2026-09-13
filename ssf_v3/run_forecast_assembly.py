@@ -33,22 +33,16 @@ Three pieces:
 import numpy as np
 import pandas as pd
 
-from binomial_reference import binomial_se_pp
+from binomial_reference import MIN_PROPORTION_VARIANCE
 from config import Config, hash_key, join_columns
-from techniques import predict
+from techniques import month_numbers_of, predict
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PROJECTION_ROLE = "projection"
 ORIGIN_SERIES, ORIGIN_CELL, ORIGIN_GLOBAL = "serie", "celda", "global"
 TECH_DEFAULT = "default"
 DEFAULT_TECHNIQUE = "T2_mean"
-MIN_HISTORY_FOR_ACQUISITION_FACTOR = 3
-# Per estimation id the band is monotone in h by construction. The TOTAL's relative band
-# can still narrow from one month to the next when the mix of that month leans toward
-# well-supported series (or toward simulated pipeline with a different composition). A
-# narrowing beyond this many percentage points of the total is a signal to look at the
-# mix; smaller wobbles are composition, not calibration.
-BAND_NARROWING_TOLERANCE_PCT = 1.0
+# (acquisition_min_pairs and band_narrowing_tolerance_pct are Config parameters)
 DEFAULT_ACQUISITION_FACTOR = 1.0
 
 
@@ -60,26 +54,25 @@ def acquisition_factor_by_series(units: pd.DataFrame, configuration: Config) -> 
     """Median of pipeline(t) / renewed(t − term) per series, and the global one.
 
     OUTPUT:  (Series fs_id → factor, global_factor). Series with fewer than
-             MIN_HISTORY_FOR_ACQUISITION_FACTOR usable pairs fall back to the global.
-    RULES:   a configured `acquisition_factor` overrides everything.
+             `acquisition_min_pairs` usable pairs fall back to the global.
+    RULES:   a configured `acquisition_factor` overrides everything. Vectorized: the
+             monthly table is joined with itself shifted by `term` months.
     """
     if configuration.acquisition_factor is not None:
         return pd.Series(dtype=float), float(configuration.acquisition_factor)
-    term = configuration.renewal_term_months
+    term, period = configuration.renewal_term_months, configuration.period_col
     history = units[(units[configuration.dataset_role_col] != PROJECTION_ROLE) & (units["sintetica"] == 0)]
-    factors, all_ratios = {}, []
-    for series_id, rows in history.groupby("fs_id"):
-        by_month = rows.set_index(configuration.period_col)[[configuration.pipeline_units_col, configuration.renewed_units_col]].sort_index()
-        ratios = []
-        for month, row in by_month.iterrows():
-            earlier = month - term
-            if earlier in by_month.index and by_month.loc[earlier, configuration.renewed_units_col] > 0:
-                ratios.append(row[configuration.pipeline_units_col] / by_month.loc[earlier, configuration.renewed_units_col])
-        all_ratios.extend(ratios)
-        if len(ratios) >= MIN_HISTORY_FOR_ACQUISITION_FACTOR:
-            factors[series_id] = float(np.median(ratios))
-    global_factor = float(np.median(all_ratios)) if all_ratios else DEFAULT_ACQUISITION_FACTOR
-    return pd.Series(factors, dtype=float), global_factor
+    monthly = history.groupby(["fs_id", period], as_index=False).agg(
+        pipe=(configuration.pipeline_units_col, "sum"), ren=(configuration.renewed_units_col, "sum"))
+    earlier = monthly[["fs_id", period, "ren"]].copy()
+    earlier[period] = earlier[period] + term
+    pairs = monthly.merge(earlier.rename(columns={"ren": "ren_earlier"}), on=["fs_id", period])
+    pairs = pairs[pairs["ren_earlier"] > 0]
+    pairs["ratio"] = pairs["pipe"] / pairs["ren_earlier"]
+    counts = pairs.groupby("fs_id")["ratio"].size()
+    factors = pairs.groupby("fs_id")["ratio"].median()[counts >= configuration.acquisition_min_pairs]
+    global_factor = float(pairs["ratio"].median()) if len(pairs) else DEFAULT_ACQUISITION_FACTOR
+    return factors.astype(float), global_factor
 
 
 def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_estimates: pd.DataFrame,
@@ -94,55 +87,59 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     RULES:   for month m beyond the known pipeline, per series and combination:
              units(m) = renewed(m − term) × factor, where renewed(m − term) is observed
              when m − term has truth, or expected (pipeline × tasa_estimada) when it is a
-             projection month; pipeline$ = units × the combination's last known AUV.
+             projection or an already simulated month; pipeline$ = units × the
+             combination's AUV at m − term.
     EDGE CASES: a series with no row at m − term contributes nothing at m.
+    NOTE:    vectorized month by month (one frame operation per simulated month).
     """
     if configuration.extended_horizon_end is None:
         return pd.DataFrame()
     period, role = configuration.period_col, configuration.dataset_role_col
+    pipe_units, pipe_usd = configuration.pipeline_units_col, configuration.pipeline_usd_col
     last_known = fine_table[period].max()
     end = pd.Period(configuration.extended_horizon_end, freq="M")
     if end <= last_known:
         return pd.DataFrame()
     factors, global_factor = acquisition_factor_by_series(units, configuration)
     rate_by_series = series_estimates.set_index("fs_id")["tasa_estimada"]
-    template = fine_table.copy()
-    template["fs_id"] = join_columns(template, configuration.rate_series_columns)
+    known = fine_table.copy()
+    known["fs_id"] = join_columns(known, configuration.rate_series_columns)
+    known["simulada"] = 0
     term = configuration.renewal_term_months
-    simulated = []
-    known_by_key = {(row["fs_id"], row["comb_id"], row[period]): row for _, row in template.iterrows()}
+    all_rows, simulated_frames = known, []
     for month in pd.period_range(last_known + 1, end, freq="M"):
-        source_month = month - term
-        for (series_id, comb_id, m), source in list(known_by_key.items()):
-            if m != source_month:
-                continue
-            if source[role] == PROJECTION_ROLE or source.get("simulada", 0) == 1:
-                rate = rate_by_series.get(series_id, np.nan)
-                renewed = source[configuration.pipeline_units_col] * (rate if np.isfinite(rate) else 0.0)
-            else:
-                renewed = source[configuration.renewed_units_col]
-            if not np.isfinite(renewed) or renewed <= 0:
-                continue
-            factor = float(factors.get(series_id, global_factor))
-            new_row = source.copy()
-            new_row[period], new_row[role] = month, PROJECTION_ROLE
-            auv = source[configuration.pipeline_usd_col] / max(source[configuration.pipeline_units_col], 1e-9)
-            new_row[configuration.pipeline_units_col] = renewed * factor
-            new_row[configuration.pipeline_usd_col] = renewed * factor * auv
-            for column in (configuration.renewed_units_col, configuration.renewed_usd_col):
-                new_row[column] = np.nan
-            new_row[configuration.current_month_col] = 0
-            new_row["simulada"], new_row["factor_adquisicion"] = 1, round(factor, 4)
-            new_row["fu_id"] = f"{series_id}|{month}"
-            new_row["fu_key"] = hash_key(new_row["fu_id"])
-            new_row["fu_comb_key"] = hash_key(f"{new_row['fu_id']}||{comb_id}")
-            known_by_key[(series_id, comb_id, month)] = new_row
-            simulated.append(new_row)
-    extended = pd.DataFrame(simulated)
-    if len(extended):
-        print(f"[5] extended horizon {last_known + 1} → {end}: {len(extended):,} simulated rows · "
-              f"acquisition factor global {global_factor:.3f} (per-series for {len(factors)} series) · "
-              f"re-entry after {term} months")
+        source = all_rows[all_rows[period] == month - term]
+        if source.empty:
+            continue
+        expected = source[pipe_units] * source["fs_id"].map(rate_by_series).fillna(0.0)
+        observed = source[configuration.renewed_units_col]
+        use_expected = (source[role] == PROJECTION_ROLE) | (source["simulada"] == 1)
+        renewed = np.where(use_expected, expected, observed.fillna(0.0))
+        keep = np.isfinite(renewed) & (renewed > 0)
+        source, renewed = source[keep], renewed[keep]
+        if source.empty:
+            continue
+        factor = source["fs_id"].map(factors).fillna(global_factor).to_numpy(dtype=float)
+        auv = (source[pipe_usd] / source[pipe_units].clip(lower=1e-9)).to_numpy(dtype=float)
+        new_rows = source.copy()
+        new_rows[period], new_rows[role] = month, PROJECTION_ROLE
+        new_rows[pipe_units] = renewed * factor
+        new_rows[pipe_usd] = renewed * factor * auv
+        for column in (configuration.renewed_units_col, configuration.renewed_usd_col):
+            new_rows[column] = np.nan
+        new_rows[configuration.current_month_col] = 0
+        new_rows["simulada"], new_rows["factor_adquisicion"] = 1, np.round(factor, 4)
+        new_rows["fu_id"] = new_rows["fs_id"] + "|" + str(month)
+        new_rows["fu_key"] = new_rows["fu_id"].map(hash_key)
+        new_rows["fu_comb_key"] = (new_rows["fu_id"] + "||" + new_rows["comb_id"].astype(str)).map(hash_key)
+        simulated_frames.append(new_rows)
+        all_rows = pd.concat([all_rows, new_rows], ignore_index=True)
+    if not simulated_frames:
+        return pd.DataFrame()
+    extended = pd.concat(simulated_frames, ignore_index=True)
+    print(f"[5] extended horizon {last_known + 1} → {end}: {len(extended):,} simulated rows · "
+          f"acquisition factor global {global_factor:.3f} (per-series for {len(factors)} series) · "
+          f"re-entry after {term} months")
     return extended
 
 
@@ -151,29 +148,30 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def rate_forecast_by_estimation_id(monthly_series: dict, decision_technique: pd.DataFrame,
-                                   decision_dynamics: pd.DataFrame, target_months: list) -> dict:
+                                   decision_dynamics: pd.DataFrame, target_months: list) -> pd.DataFrame:
     """The rate predicted at every target month for every estimation id with its technique.
 
-    OUTPUT:  dict (id_estimacion, month) → (rate, h, technique). h = months from the
+    OUTPUT:  DataFrame(id_estimacion, period, tasa_pred, h, tecnica). h = months from the
              id's last month with truth.
     """
     technique_by_id = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica"]))
     labels = {row["id_estimacion"]: dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]))
               for _, row in decision_dynamics.iterrows()}
-    predictions = {}
+    rows = []
     for estimation_id, monthly in monthly_series.items():
         valid = monthly[monthly["rate"].notna() & (monthly["pipe"] > 0)]
         if valid.empty:
             continue
         rates, months = valid["rate"].to_numpy(dtype=float), pd.PeriodIndex(valid.index)
+        month_numbers = month_numbers_of(months)
         technique = technique_by_id.get(estimation_id, DEFAULT_TECHNIQUE)
         for month in target_months:
             h = int((month - months[-1]).n)
             if h < 1:
                 continue
-            value = predict(technique, rates, months, h, labels.get(estimation_id, {}))
-            predictions[(estimation_id, month)] = (value, h, technique)
-    return predictions
+            value = predict(technique, rates, month_numbers, h, labels.get(estimation_id, {}))
+            rows.append((estimation_id, month, value, h, technique))
+    return pd.DataFrame(rows, columns=["id_estimacion", "period", "tasa_pred", "h", "tecnica"])
 
 
 def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame, decision_support: pd.DataFrame,
@@ -188,42 +186,45 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
              tasa_estimada of the series → mean of the mandatory cell → global mean;
              each step records its origin. Saturated at rate_cap. Uplift: the cell's
              decision, else neutral 1.0.
+    NOTE:    vectorized: one merge per step of the cascade, no per-row loop.
     """
+    period = configuration.period_col
     rows = future_rows.copy()
-    rows["fs_id"] = join_columns(rows, configuration.rate_series_columns)
+    rows["fs_id"] = join_columns(rows, configuration.rate_series_columns)      # (re)derived: same formula everywhere
     rows["uplift_cell_id"] = join_columns(rows, configuration.uplift_cell_columns)
-    rows["mandatory_cell_id"] = join_columns(rows, configuration.business_mandatory_dims)
+    rows["celda_id"] = join_columns(rows, configuration.business_mandatory_dims)
     if "simulada" not in rows.columns:
         rows["simulada"] = 0
     rows["simulada"] = rows["simulada"].fillna(0).astype(int)
-    estimation_of = dict(zip(decision_support["fs_id"], decision_support["id_estimacion"]))
-    estimate_of = series_estimates.set_index("fs_id")["tasa_estimada"]
-    cell_of = series_estimates.merge(decision_support[["fs_id"]], on="fs_id")
+    estimation_of = decision_support[["fs_id", "id_estimacion"]].drop_duplicates("fs_id")
+    rows = rows.merge(estimation_of, on="fs_id", how="left")
+    rows["id_estimacion"] = rows["id_estimacion"].fillna(rows["fs_id"])
+    # step 1: the technique prediction of the estimation id at the row's month
+    predictions = rate_forecast_by_estimation_id(monthly_series, decision_technique, decision_dynamics,
+                                                 sorted(rows[period].unique()))
+    rows = rows.merge(predictions, on=["id_estimacion", period], how="left")
     technique_origin = dict(zip(decision_technique["id_estimacion"], decision_technique["tecnica_origen"]))
-    target_months = sorted(rows[configuration.period_col].unique())
-    predictions = rate_forecast_by_estimation_id(monthly_series, decision_technique, decision_dynamics, target_months)
-    cell_mean = (series_estimates.assign(celda=series_estimates["fs_id"].str.split("|").str[:len(configuration.business_mandatory_dims)].str.join("|"))
-                 .dropna(subset=["tasa_estimada"]).groupby("celda")["tasa_estimada"].mean())
+    # step 2-4: the series estimate, the cell mean, the global mean
+    estimate_of = series_estimates[["fs_id", "tasa_estimada"]].drop_duplicates("fs_id")
+    rows = rows.merge(estimate_of, on="fs_id", how="left")
+    mandatory_count = len(configuration.business_mandatory_dims)
+    cell_mean = (series_estimates.assign(celda_id=series_estimates["fs_id"].str.split("|").str[:mandatory_count].str.join("|"))
+                 .dropna(subset=["tasa_estimada"]).groupby("celda_id")["tasa_estimada"].mean().rename("tasa_celda"))
+    rows = rows.merge(cell_mean, on="celda_id", how="left")
     global_mean = float(series_estimates["tasa_estimada"].mean())
+    from_technique = rows["tasa_pred"].notna()
+    from_estimate = ~from_technique & rows["tasa_estimada"].notna()
+    from_cell = ~from_technique & ~from_estimate & rows["tasa_celda"].notna()
+    rows["tasa"] = np.select([from_technique, from_estimate, from_cell],
+                             [rows["tasa_pred"], rows["tasa_estimada"], rows["tasa_celda"]], default=global_mean)
+    rows["tasa"] = rows["tasa"].clip(upper=configuration.rate_cap)
+    rows["tasa_origen"] = np.select([from_technique | from_estimate, from_cell], [ORIGIN_SERIES, ORIGIN_CELL], default=ORIGIN_GLOBAL)
+    rows["tecnica"] = rows["tecnica"].where(from_technique, DEFAULT_TECHNIQUE)
+    rows["tecnica_origen"] = rows["id_estimacion"].map(technique_origin).where(from_technique, TECH_DEFAULT).fillna(TECH_DEFAULT)
+    rows["h"] = rows["h"].where(from_technique, np.nan)
+    rows = rows.drop(columns=["tasa_pred", "tasa_estimada", "tasa_celda"])
     uplift_of = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift"]))
     uplift_origin = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift_origen"]))
-    rates, origins, ids, horizons, techniques, tech_origins = [], [], [], [], [], []
-    for _, row in rows.iterrows():
-        estimation_id = estimation_of.get(row["fs_id"], row["fs_id"])
-        prediction = predictions.get((estimation_id, row[configuration.period_col]))
-        if prediction is not None and np.isfinite(prediction[0]):
-            rate, h, technique = prediction
-            origin, tech_origin = ORIGIN_SERIES, technique_origin.get(estimation_id, TECH_DEFAULT)
-        elif np.isfinite(estimate_of.get(row["fs_id"], np.nan)):
-            rate, h, technique, origin, tech_origin = estimate_of[row["fs_id"]], np.nan, DEFAULT_TECHNIQUE, ORIGIN_SERIES, TECH_DEFAULT
-        elif row["mandatory_cell_id"] in cell_mean.index:
-            rate, h, technique, origin, tech_origin = cell_mean[row["mandatory_cell_id"]], np.nan, DEFAULT_TECHNIQUE, ORIGIN_CELL, TECH_DEFAULT
-        else:
-            rate, h, technique, origin, tech_origin = global_mean, np.nan, DEFAULT_TECHNIQUE, ORIGIN_GLOBAL, TECH_DEFAULT
-        rates.append(min(float(rate), configuration.rate_cap)); origins.append(origin); ids.append(estimation_id)
-        horizons.append(h); techniques.append(technique); tech_origins.append(tech_origin)
-    rows["id_estimacion"], rows["h"], rows["tecnica"], rows["tecnica_origen"] = ids, horizons, techniques, tech_origins
-    rows["tasa"], rows["tasa_origen"] = rates, origins
     rows["uplift"] = rows["uplift_cell_id"].map(uplift_of).fillna(1.0)
     rows["uplift_origen"] = rows["uplift_cell_id"].map(uplift_origin).fillna("neutro")
     rows["esperado_usd"] = rows[configuration.pipeline_usd_col] * rows["tasa"] * rows["uplift"]
@@ -237,39 +238,50 @@ def forecast_bands(detail: pd.DataFrame, decision_error_bands: pd.DataFrame, dec
     RULES:   pool error at h: q_low_norm / q_high_norm × binomial se of the estimation
              id's typical month (n_pool, tasa_pool from decision_dynamics); row sampling
              error: binomial se with the row's own units; combined in quadrature on each
-             side; clipped so the rate stays in [0, rate_cap]. Rows whose (id, h) has no
-             band use the binomial error at z, flagged `banda_origen = "binomial"`.
+             side; clipped so the rate stays in [0, rate_cap]. When h itself was not
+             judged, the band of the nearest judged horizon below it is used (monotone,
+             so never optimistic) and flagged `+h<judged>`. Rows with no band at all use
+             the binomial error at z, flagged `banda_origen = "binomial"`.
+    NOTE:    vectorized: the nearest judged horizon is found with one merge_asof per row set.
     """
-    band_lookup = {(r["id_estimacion"], int(r["h"])): (r["q_low_norm"], r["q_high_norm"], r["banda_origen"])
-                   for _, r in decision_error_bands.iterrows()}
-    max_h = {i: h for i, h in decision_error_bands.groupby("id_estimacion")["h"].max().items()}
-    pool_info = decision_dynamics.set_index("id_estimacion")[["n_pool", "tasa_pool"]]
-    lows, highs, origins = [], [], []
-    for _, row in detail.iterrows():
-        estimation_id, h = row["id_estimacion"], row["h"]
-        se_row = binomial_se_pp(row["tasa"], max(float(row[configuration.pipeline_units_col]), 1.0))
-        if estimation_id in pool_info.index:
-            se_pool = binomial_se_pp(float(pool_info.loc[estimation_id, "tasa_pool"]) if np.isfinite(pool_info.loc[estimation_id, "tasa_pool"]) else row["tasa"],
-                                     max(float(pool_info.loc[estimation_id, "n_pool"]), 1.0))
-        else:
-            se_pool = se_row
-        key = (estimation_id, int(min(h, max_h.get(estimation_id, 0)))) if np.isfinite(h) and estimation_id in max_h else None
-        if key in band_lookup:
-            q_low, q_high, origin = band_lookup[key]
-            if key[1] < h:
-                origin = f"{origin}+extrapolada"
-        else:
-            q_low, q_high, origin = -configuration.z, configuration.z, "binomial"
-        low = -np.sqrt((q_low * se_pool) ** 2 + (configuration.z * se_row) ** 2)
-        high = np.sqrt((q_high * se_pool) ** 2 + (configuration.z * se_row) ** 2)
-        low = max(low, -100 * row["tasa"])
-        high = min(high, 100 * (configuration.rate_cap - row["tasa"]))
-        lows.append(low); highs.append(high); origins.append(origin)
     bands = detail.copy()
-    bands["banda_low_pp"], bands["banda_high_pp"], bands["banda_origen"] = np.round(lows, 3), np.round(highs, 3), origins
+    pool = decision_dynamics[["id_estimacion", "n_pool", "tasa_pool"]].drop_duplicates("id_estimacion")
+    bands = bands.merge(pool, on="id_estimacion", how="left")
+    bands["tasa_pool"] = bands["tasa_pool"].fillna(bands["tasa"])
+    units = bands[configuration.pipeline_units_col].clip(lower=1.0).astype(float)
+    se_row = (100 * np.sqrt(np.maximum(bands["tasa"] * (1 - bands["tasa"]), MIN_PROPORTION_VARIANCE) / units)).to_numpy()
+    n_pool = bands["n_pool"].fillna(units).clip(lower=1.0).to_numpy(dtype=float)
+    se_pool = 100 * np.sqrt(np.maximum(bands["tasa_pool"] * (1 - bands["tasa_pool"]), MIN_PROPORTION_VARIANCE) / n_pool)
+    # nearest judged horizon at or below h, per estimation id
+    judged = decision_error_bands[["id_estimacion", "h", "q_low_norm", "q_high_norm", "banda_origen"]].rename(columns={"h": "h_juzgado"})
+    judged = judged.sort_values("h_juzgado")
+    with_h = bands[bands["h"].notna()].copy()
+    with_h["h_busqueda"] = with_h["h"].astype(int)
+    with_h = with_h.sort_values("h_busqueda")
+    matched = pd.merge_asof(with_h, judged, left_on="h_busqueda", right_on="h_juzgado", by="id_estimacion", direction="backward")
+    # rows whose h is below every judged horizon take the first judged one (still monotone-safe)
+    first = judged.drop_duplicates("id_estimacion").rename(columns={"h_juzgado": "h_primero", "q_low_norm": "q_low_primero",
+                                                                     "q_high_norm": "q_high_primero", "banda_origen": "origen_primero"})
+    matched = matched.merge(first, on="id_estimacion", how="left")
+    missing = matched["h_juzgado"].isna() & matched["h_primero"].notna()
+    for target, source in (("h_juzgado", "h_primero"), ("q_low_norm", "q_low_primero"), ("q_high_norm", "q_high_primero"), ("banda_origen", "origen_primero")):
+        matched[target] = matched[target].where(~missing, matched[source])
+    lookup = matched[["fu_comb_key", "h_juzgado", "q_low_norm", "q_high_norm", "banda_origen"]]
+    bands = bands.merge(lookup, on="fu_comb_key", how="left")
+    has_band = bands["q_low_norm"].notna()
+    q_low = bands["q_low_norm"].fillna(-configuration.z).to_numpy(dtype=float)
+    q_high = bands["q_high_norm"].fillna(configuration.z).to_numpy(dtype=float)
+    origin = bands["banda_origen"].fillna("binomial")
+    not_judged_at_h = has_band & (bands["h_juzgado"] != bands["h"])
+    origin = origin.where(~not_judged_at_h, origin + "+h" + bands["h_juzgado"].fillna(0).astype(int).astype(str))
+    low = -np.sqrt((q_low * se_pool) ** 2 + (configuration.z * se_row) ** 2)
+    high = np.sqrt((q_high * se_pool) ** 2 + (configuration.z * se_row) ** 2)
+    low = np.maximum(low, -100 * bands["tasa"].to_numpy())
+    high = np.minimum(high, 100 * (configuration.rate_cap - bands["tasa"].to_numpy()))
+    bands["banda_low_pp"], bands["banda_high_pp"], bands["banda_origen"] = np.round(low, 3), np.round(high, 3), origin
     money = bands[configuration.pipeline_usd_col] * bands["uplift"] / 100
     bands["banda_low_usd"], bands["banda_high_usd"] = (bands["banda_low_pp"] * money).round(2), (bands["banda_high_pp"] * money).round(2)
-    return bands
+    return bands.drop(columns=["n_pool", "tasa_pool", "h_juzgado", "q_low_norm", "q_high_norm"])
 
 
 def aggregate_with_bands(bands: pd.DataFrame, grouping: list, configuration: Config) -> pd.DataFrame:
@@ -302,7 +314,7 @@ def horizon_report(bands: pd.DataFrame, configuration: Config) -> pd.DataFrame:
         lambda g: 100 * g.loc[g["tasa_origen"] == ORIGIN_SERIES, "esperado_usd"].sum() / max(g["esperado_usd"].sum(), 1e-9),
         include_groups=False).reindex(monthly[period]).round(1).values
     monthly["banda_rel_pct"] = ((monthly["banda_high_usd"] - monthly["banda_low_usd"]) / 2 / monthly["esperado_usd"].replace(0, np.nan) * 100).round(2)
-    monthly["banda_monotona"] = (monthly["banda_rel_pct"].diff().fillna(0) >= -BAND_NARROWING_TOLERANCE_PCT).astype(int)
+    monthly["banda_monotona"] = (monthly["banda_rel_pct"].diff().fillna(0) >= -configuration.band_narrowing_tolerance_pct).astype(int)
     monthly[period] = monthly[period].astype(str)
     return monthly
 
@@ -326,10 +338,10 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     bands = forecast_bands(detail, decisions["decision_error_bands"], decisions["decision_dynamics"], configuration)
     level_of = series_card.set_index("fs_id")["nivel_riesgo"]
     bands["nivel_riesgo"] = bands["fs_id"].map(level_of).fillna("D_sin_historia")
-    detail_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", period, configuration.pipeline_units_col,
-                      configuration.pipeline_usd_col, "h", "tecnica", "tecnica_origen", "tasa", "tasa_origen", "uplift",
-                      "uplift_origen", "esperado_usd", "simulada", "nivel_riesgo"]
-    band_columns = ["fu_key", "comb_key", "fu_comb_key", "id_estimacion", period, "h", "banda_low_pp", "banda_high_pp",
+    detail_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", "uplift_cell_id", "celda_id",
+                      period, configuration.pipeline_units_col, configuration.pipeline_usd_col, "h", "tecnica", "tecnica_origen",
+                      "tasa", "tasa_origen", "uplift", "uplift_origen", "esperado_usd", "simulada", "nivel_riesgo"]
+    band_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", period, "h", "banda_low_pp", "banda_high_pp",
                     "banda_low_usd", "banda_high_usd", "banda_origen", "esperado_usd"]
     configuration.write(bands[detail_columns].assign(**{period: bands[period].astype(str)}), "forecast_detail")
     configuration.write(bands[band_columns].assign(**{period: bands[period].astype(str)}), "forecast_bands")

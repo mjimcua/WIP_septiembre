@@ -25,18 +25,19 @@ From the same table:
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 import pandas as pd
 
-from binomial_reference import binomial_se_pp, weighted_quantile
+from binomial_reference import binomial_se_pp, inverse_logit, logit, weighted_quantile
 from config import Config
-from techniques import CATALOGUE, eligible_techniques, family_rank, predict, technique_dimension
+from techniques import CATALOGUE, eligible_techniques, family_rank, month_numbers_of, technique_dimension
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 CHALLENGER_ORIGIN = "retador"
 CHAMPION_ORIGIN = "campeon"
-DEFAULT_HORIZON_WHEN_UNKNOWN = 4
-INTERMITTENT_ZERO_SHARE = 0.30
+# (intermittent_zero_share is a Config parameter: see config.py, phase 3)
 
 
 def dynamics_labels(decision_dynamics: pd.DataFrame) -> dict:
@@ -48,42 +49,92 @@ def dynamics_labels(decision_dynamics: pd.DataFrame) -> dict:
     return labels
 
 
+def backtest_parameters(configuration: Config) -> dict:
+    """The few numbers the backtest loop needs, picklable for the worker processes."""
+    return dict(min_history=configuration.backtest_min_history_months, max_targets=configuration.backtest_max_targets,
+                intermittent_zero_share=configuration.intermittent_zero_share)
+
+
+def _backtest_chunk(arguments: tuple) -> list:
+    """Worker: the raw prediction rows of a chunk of estimation ids (module-level so it pickles)."""
+    chunk, labels, gate_by_id, horizons, parameters, techniques_by_id = arguments
+    rows = []
+    for estimation_id, monthly in chunk:
+        if gate_by_id.get(estimation_id) == "soporte":
+            continue
+        valid = monthly[monthly["rate"].notna() & (monthly["pipe"] > 0)]
+        if len(valid) <= parameters["min_history"]:
+            continue
+        rates, months = valid["rate"].to_numpy(dtype=float), pd.PeriodIndex(valid.index)
+        supports = valid["pipe"].to_numpy(dtype=float)
+        logit_rates, month_numbers = logit(rates), month_numbers_of(months)
+        dynamics = dict(labels.get(estimation_id, {}))
+        dynamics["intermitente"] = int(np.mean(rates < 0.02) >= parameters["intermittent_zero_share"])
+        first_target = max(parameters["min_history"], len(valid) - parameters["max_targets"])
+        eligible_by_length = {}
+        for target_position in range(first_target, len(valid)):
+            real, n_real = rates[target_position], supports[target_position]
+            se_pp = binomial_se_pp(real, n_real)
+            target_month = str(months[target_position])
+            for h in horizons:
+                origin_position = target_position - h
+                if origin_position < parameters["min_history"] - 1:
+                    continue
+                history_logit, history_months = logit_rates[:origin_position + 1], month_numbers[:origin_position + 1]
+                origin_month = str(months[origin_position])
+                length = len(history_logit)
+                if length not in eligible_by_length:
+                    eligible = eligible_techniques(length, dynamics)
+                    if techniques_by_id is not None:
+                        eligible = [t for t in eligible if t in techniques_by_id.get(estimation_id, ())]
+                    eligible_by_length[length] = eligible
+                for technique_id in eligible_by_length[length]:
+                    try:
+                        value = CATALOGUE[technique_id][4](history_logit, history_months, h, dynamics)
+                    except Exception:
+                        continue
+                    if not np.isfinite(value):
+                        continue
+                    predicted = float(inverse_logit(value))
+                    error_pp = 100 * (predicted - real)
+                    rows.append((estimation_id, target_month, origin_month, h, technique_id, round(predicted, 4),
+                                 round(real, 4), n_real, round(error_pp, 3), round(se_pp, 3), round(error_pp / se_pp, 4)))
+    return rows
+
+
 def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFrame, horizons: list,
-                            configuration: Config) -> pd.DataFrame:
+                            configuration: Config, techniques_by_id: dict = None) -> pd.DataFrame:
     """The long table of predictions: one row per (id, target, h, technique).
 
     OUTPUT:  backtest_long: id_estimacion, mes_objetivo, origen, h, tecnica_id, tasa_pred,
              tasa_real, n_real, err_pp (signed: pred − real), se_binom_pp (of the target
              month with its own n), err_norm (err_pp / se_binom_pp).
     RULES:   history ≤ origin only; the target must have a defined rate and n > 0.
+             Only estimation ids WITH SUPPORT are judged (gate ≠ 'soporte'): a series under
+             the floor gets the challenger and a binomial band by doctrine (P9), and
+             judging it would cost the same as judging a real pool for nothing. Targets =
+             the most recent `backtest_max_targets` months; the history before each
+             origin is the whole history.
+             `techniques_by_id` (id → list) restricts the techniques judged per id (the
+             second stage: champion + challenger only); None = every eligible technique.
+    COST:    ≈ targets × horizons × techniques per id. The logit is computed once per id.
     """
     labels = dynamics_labels(decision_dynamics)
-    rows = []
-    for estimation_id, monthly in monthly_series.items():
-        valid = monthly[monthly["rate"].notna() & (monthly["pipe"] > 0)]
-        if len(valid) <= configuration.backtest_min_history_months:
-            continue
-        rates, months = valid["rate"].to_numpy(dtype=float), pd.PeriodIndex(valid.index)
-        dynamics = labels.get(estimation_id, {})
-        dynamics["intermitente"] = int(np.mean(rates < 0.02) >= INTERMITTENT_ZERO_SHARE)
-        for target_position in range(configuration.backtest_min_history_months, len(valid)):
-            real, n_real = rates[target_position], float(valid["pipe"].iloc[target_position])
-            se_pp = binomial_se_pp(real, n_real)
-            for h in horizons:
-                origin_position = target_position - h
-                if origin_position < configuration.backtest_min_history_months - 1:
-                    continue
-                history_rates, history_months = rates[:origin_position + 1], months[:origin_position + 1]
-                for technique_id in eligible_techniques(len(history_rates), dynamics):
-                    predicted = predict(technique_id, history_rates, history_months, h, dynamics)
-                    if not np.isfinite(predicted):
-                        continue
-                    error_pp = 100 * (predicted - real)
-                    rows.append(dict(id_estimacion=estimation_id, mes_objetivo=str(months[target_position]),
-                                     origen=str(months[origin_position]), h=h, tecnica_id=technique_id,
-                                     tasa_pred=round(predicted, 4), tasa_real=round(real, 4), n_real=n_real,
-                                     err_pp=round(error_pp, 3), se_binom_pp=round(se_pp, 3),
-                                     err_norm=round(error_pp / se_pp, 4)))
+    gate_by_id = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["gate"]))
+    items = list(monthly_series.items())
+    parameters = backtest_parameters(configuration)
+    workers = max(1, int(configuration.backtest_workers))
+    if workers == 1 or len(items) < 2 * workers:
+        rows = _backtest_chunk((items, labels, gate_by_id, horizons, parameters, techniques_by_id))
+    else:
+        chunks = [items[index::workers] for index in range(workers)]
+        arguments = [(chunk, labels, gate_by_id, horizons, parameters, techniques_by_id) for chunk in chunks]
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                rows = [row for chunk_rows in pool.map(_backtest_chunk, arguments) for row in chunk_rows]
+        except Exception as error:                       # a spawn problem must not kill the analysis
+            print(f"[3] ⚠ parallel backtest failed ({type(error).__name__}: {error}); running sequentially")
+            rows = _backtest_chunk((items, labels, gate_by_id, horizons, parameters, techniques_by_id))
     return pd.DataFrame(rows, columns=["id_estimacion", "mes_objetivo", "origen", "h", "tecnica_id", "tasa_pred",
                                        "tasa_real", "n_real", "err_pp", "se_binom_pp", "err_norm"])
 
@@ -100,9 +151,9 @@ def select_technique(backtest_long: pd.DataFrame, configuration: Config) -> pd.D
     rows = []
     challenger = configuration.challenger_technique
     for estimation_id, block in backtest_long.groupby("id_estimacion"):
-        scores = block.groupby("tecnica_id").agg(err_norm_medio=("err_norm", lambda e: float(np.mean(np.abs(e)))),
-                                                 err_pp_medio=("err_pp", lambda e: float(np.mean(np.abs(e)))),
-                                                 n_predicciones=("err_norm", "size"))
+        absolute = block.assign(abs_norm=block["err_norm"].abs(), abs_pp=block["err_pp"].abs())
+        scores = absolute.groupby("tecnica_id").agg(err_norm_medio=("abs_norm", "mean"), err_pp_medio=("abs_pp", "mean"),
+                                                    n_predicciones=("err_norm", "size"))
         challenger_score = float(scores.loc[challenger, "err_norm_medio"]) if challenger in scores.index else np.inf
         candidates = scores[scores["n_predicciones"] >= configuration.backtest_min_predictions]
         best_score = candidates["err_norm_medio"].min() if len(candidates) else np.inf
@@ -124,25 +175,25 @@ def error_bands(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, h
     """The asymmetric band per (estimation id, h) of its chosen technique.
 
     OUTPUT:  decision_error_bands: id_estimacion, tecnica, h, q_low_norm, q_high_norm,
-             n_predicciones, banda_origen ("propia" / "familia"), and the widths made
-             MONOTONE in h (a band never narrows as the horizon grows).
+             n_predicciones, banda_origen ("propia" / "familia" / "binomial"), and the
+             widths made MONOTONE in h (a band never narrows as the horizon grows).
     RULES:   own quantiles when the id has ≥ band_min_predictions at that h; otherwise
              the family's (same technique, every id, that h). Quantiles are of err_norm
              (signed), so a trending series gets a shifted band by itself.
+    NOTE:    the long table is grouped ONCE by (id, technique, h) and once by (technique,
+             h); filtering it per id would scan millions of rows thousands of times.
     """
+    own_groups = {key: group.to_numpy() for key, group in backtest_long.groupby(["id_estimacion", "tecnica_id", "h"])["err_norm"]}
+    family_groups = {key: group.to_numpy() for key, group in backtest_long.groupby(["tecnica_id", "h"])["err_norm"]}
     rows = []
-    family = backtest_long.groupby(["tecnica_id", "h"])["err_norm"]
     for _, choice in decision_technique.iterrows():
-        own = backtest_long[(backtest_long["id_estimacion"] == choice["id_estimacion"]) & (backtest_long["tecnica_id"] == choice["tecnica"])]
         low_so_far, high_so_far = 0.0, 0.0
         for h in horizons:
-            at_h = own[own["h"] == h]["err_norm"].to_numpy()
+            at_h = own_groups.get((choice["id_estimacion"], choice["tecnica"], h), np.array([]))
             if len(at_h) >= configuration.band_min_predictions:
                 origin, source = "propia", at_h
             else:
-                key = (choice["tecnica"], h)
-                source = family.get_group(key).to_numpy() if key in family.groups else np.array([])
-                origin = "familia"
+                origin, source = "familia", family_groups.get((choice["tecnica"], h), np.array([]))
             low = weighted_quantile(source, configuration.band_low_quantile)
             high = weighted_quantile(source, configuration.band_high_quantile)
             if not np.isfinite(low) or not np.isfinite(high):
@@ -182,22 +233,36 @@ def holdout_report(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame
 
 def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame, configuration: Config,
                           horizons: list) -> dict:
-    """Phase 3 end to end. Persists dim_tecnica, backtest_predictions, decision_technique,
-    decision_error_bands, backtest_holdout."""
+    """Phase 3 end to end, in two stages. Persists dim_tecnica, backtest_predictions,
+    decision_technique, decision_error_bands, backtest_holdout.
+
+    STAGE 1 · screen: every eligible technique at `backtest_screen_horizons` → the champion
+             per id (select_technique on the screen table).
+    STAGE 2 · judge: champion + challenger at EVERY judged horizon → bands, hold-out. The
+             persisted `backtest_predictions` is the union of both stages.
+    Two stages cost ~3× less than judging every technique at every horizon, and the
+    champion is chosen where it matters most (the near horizons).
+    """
     configuration.write(technique_dimension(), "dim_tecnica")
-    backtest_long = rolling_origin_backtest(monthly_series, decision_dynamics, horizons, configuration)
-    decision_technique = select_technique(backtest_long, configuration)
+    screen_horizons = sorted({h for h in configuration.backtest_screen_horizons if h in horizons} | {horizons[0]})
+    screen = rolling_origin_backtest(monthly_series, decision_dynamics, screen_horizons, configuration)
+    decision_technique = select_technique(screen, configuration)
+    remaining = [h for h in horizons if h not in screen_horizons]
+    chosen_and_challenger = {row["id_estimacion"]: {row["tecnica"], configuration.challenger_technique}
+                             for _, row in decision_technique.iterrows()}
+    judged = rolling_origin_backtest(monthly_series, decision_dynamics, remaining, configuration, chosen_and_challenger) if remaining else screen.head(0)
+    backtest_long = pd.concat([screen, judged], ignore_index=True).sort_values(["id_estimacion", "mes_objetivo", "h", "tecnica_id"])
     bands = error_bands(backtest_long, decision_technique, horizons, configuration)
     holdout = holdout_report(backtest_long, decision_technique, bands, configuration)
     configuration.write(backtest_long, "backtest_predictions")
     configuration.write(decision_technique, "decision_technique")
     configuration.write(bands, "decision_error_bands")
     configuration.write(holdout, "backtest_holdout")
-    if len(backtest_long):
-        leaderboard = backtest_long.groupby("tecnica_id")["err_norm"].apply(lambda e: float(np.mean(np.abs(e)))).sort_values()
-        print(f"[3] backtest: {len(backtest_long):,} predictions · {backtest_long['id_estimacion'].nunique()} estimation ids · "
-              f"{backtest_long['mes_objetivo'].nunique()} target months · horizons {horizons}")
-        print("[3] leaderboard (mean |error| in binomial units; 1.0 = one sampling error):")
+    if len(screen):
+        leaderboard = screen.groupby("tecnica_id")["err_norm"].apply(lambda e: float(np.mean(np.abs(e)))).sort_values()
+        print(f"[3] backtest: {len(backtest_long):,} predictions · {backtest_long['id_estimacion'].nunique()} estimation ids with support · "
+              f"{backtest_long['mes_objetivo'].nunique()} target months · screened at h={screen_horizons}, judged at h={horizons}")
+        print("[3] leaderboard on the screen (mean |error| in binomial units; 1.0 = one sampling error):")
         for technique_id, score in leaderboard.items():
             print(f"   {technique_id:<20} {score:5.2f}   {CATALOGUE[technique_id][1]}")
         print(f"[3] champions: {decision_technique['tecnica'].value_counts().to_dict()} · "

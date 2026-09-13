@@ -21,6 +21,7 @@ Both call `configuration.read_raw()` (overridden by the caller) and write throug
 import datetime
 import os
 import sys
+import time
 
 import pandas as pd
 
@@ -42,6 +43,11 @@ from config import Config, hash_key, join_columns   # noqa: E402
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 SECTION_RULE = "═" * 74
+
+
+def section(title: str, started_at: float) -> None:
+    """Print the section header with the seconds the previous section took."""
+    print(SECTION_RULE, f"\n{title}   (previous section {time.time() - started_at:.1f} s)")
 DECISION_TABLES = ("decision_eta2", "decision_support", "decision_dynamics", "decision_technique",
                    "decision_error_bands", "decision_uplift")
 
@@ -50,10 +56,25 @@ DECISION_TABLES = ("decision_eta2", "decision_support", "decision_dynamics", "de
 # SHARED STEPS
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+REQUIRED_CONFIG_FIELDS = ("timevarying_model_version", "uplift_floor", "backtest_test_start", "extended_horizon_end",
+                          "backtest_horizons", "seasonality_min_months", "acquisition_min_pairs")
+
+
+def check_configuration_version(configuration: Config) -> None:
+    """Stop with a clear message when config.py is older than the phases that read it."""
+    missing = [name for name in REQUIRED_CONFIG_FIELDS if not hasattr(configuration, name)]
+    if missing:
+        raise AttributeError(f"config.py is outdated: Config has no {missing}. Replace config.py with the one of this "
+                             f"delivery (your subclass with read_raw keeps working) and restart the kernel.")
+
+
 def phase_0(configuration: Config) -> dict:
     """Raw → validated, conditioned, the two tables, keys, labels, reference."""
+    check_configuration_version(configuration)
+    started = time.time()
     print(SECTION_RULE, "\nPHASE 0 — raw data validation")
     raw = configuration.read_raw()
+    print(f"[0] raw read in {time.time() - started:.1f} s · {len(raw):,} rows")
     validated = raw_data_validation.validate_raw(raw, configuration)
     conditioned = raw_data_validation.apply_current_month_doctrine(validated, configuration)
     fine_table = raw_data_validation.build_fine_table(conditioned, configuration)
@@ -102,8 +123,8 @@ def forecast_horizons(fine_table: pd.DataFrame, units: pd.DataFrame, configurati
     return list(range(1, max(int((end - last_truth).n), 1) + 1))
 
 
-def validate(results: dict, configuration: Config) -> pd.DataFrame:
-    print(SECTION_RULE)
+def validate(results: dict, configuration: Config, started: float) -> pd.DataFrame:
+    section("VALIDATION", started)
     return run_validation.run_validation(results, configuration)
 
 
@@ -113,27 +134,29 @@ def validate(results: dict, configuration: Config) -> pd.DataFrame:
 
 def run_analysis(configuration: Config) -> dict:
     """The evaluation run: every diagnostic, every decision written, the forecast produced."""
+    started = time.time()
     results = phase_0(configuration)
     fine_table, labeled_units = results["fine_table"], results["labeled_units"]
 
-    print(SECTION_RULE, "\nPHASE 1 — rate series, dimensions, support ladder")
+    section("PHASE 1 — rate series, dimensions, support ladder", started); started = time.time()
     units, series_summary = run_rate_series.build_rate_series(labeled_units, configuration)
     dimensions = analysis_dimensions.run_dimension_analysis(units, series_summary, configuration)
     series_estimates, series_card, decision_support, parent_ladder = run_support_ladder.run_support_ladder(
         units, series_summary, dimensions["decision_eta2"], configuration)
     key_bridge = build_key_bridge(fine_table, units, decision_support, configuration)
 
-    print(SECTION_RULE, "\nPHASE 2 — dynamics")
+    section("PHASE 2 — dynamics", started); started = time.time()
     decision_dynamics, monthly_series = analysis_dynamics.run_dynamics_analysis(units, decision_support, parent_ladder, configuration)
 
-    print(SECTION_RULE, "\nPHASE 3 — backtest, technique, bands")
-    horizons = forecast_horizons(fine_table, units, configuration)
-    backtest = analysis_backtest.run_backtest_analysis(monthly_series, decision_dynamics, configuration, horizons)
+    section("PHASE 3 — backtest, technique, bands", started); started = time.time()
+    forecast_horizon = forecast_horizons(fine_table, units, configuration)[-1]
+    judged_horizons = sorted({h for h in configuration.backtest_horizons if h <= forecast_horizon} | {forecast_horizon})
+    backtest = analysis_backtest.run_backtest_analysis(monthly_series, decision_dynamics, configuration, judged_horizons)
 
-    print(SECTION_RULE, "\nPHASE 4 — uplift")
+    section("PHASE 4 — uplift", started); started = time.time()
     decision_uplift = run_uplift.run_uplift(fine_table, configuration)
 
-    print(SECTION_RULE, "\nPHASE 5 — assembly, extended horizon, bands")
+    section("PHASE 5 — assembly, extended horizon, bands", started); started = time.time()
     decisions = dict(decision_eta2=dimensions["decision_eta2"], decision_support=decision_support,
                      decision_dynamics=decision_dynamics, decision_technique=backtest["decision_technique"],
                      decision_error_bands=backtest["decision_error_bands"], decision_uplift=decision_uplift)
@@ -143,7 +166,7 @@ def run_analysis(configuration: Config) -> dict:
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
         decision_support=decision_support, parent_ladder=parent_ladder, backtest_holdout=backtest["backtest_holdout"],
-        decision_uplift=decision_uplift), configuration)
+        decision_uplift=decision_uplift), configuration, started)
     print(SECTION_RULE, "\n✓ analysis complete · decisions and tables in", configuration.outdir)
     return dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
                 series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
@@ -177,24 +200,25 @@ def read_decisions(configuration: Config) -> dict:
 
 def run_pipeline(configuration: Config) -> dict:
     """The monthly run: read decisions, apply them, produce the forecast. No decision is taken."""
+    started = time.time()
     decisions = read_decisions(configuration)
     results = phase_0(configuration)
     fine_table, labeled_units = results["fine_table"], results["labeled_units"]
-    print(SECTION_RULE, "\nPHASE 1 — rate series and support (decisions read)")
+    section("PHASE 1 — rate series and support (decisions read)", started); started = time.time()
     units, series_summary = run_rate_series.build_rate_series(labeled_units, configuration)
     series_estimates, series_card, decision_support, parent_ladder = run_support_ladder.run_support_ladder(
         units, series_summary, decisions["decision_eta2"], configuration)
     key_bridge = build_key_bridge(fine_table, units, decision_support, configuration)
     monthly_series = analysis_dynamics.monthly_series_by_estimation_id(units, decision_support, parent_ladder, configuration)
-    print(SECTION_RULE, "\nPHASE 4 — uplift")
+    section("PHASE 4 — uplift", started); started = time.time()
     decision_uplift = run_uplift.run_uplift(fine_table, configuration)
-    print(SECTION_RULE, "\nPHASE 5 — assembly (decisions read)")
+    section("PHASE 5 — assembly (decisions read)", started); started = time.time()
     applied = dict(decisions, decision_support=decision_support, decision_uplift=decision_uplift)
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
                                                            applied, monthly_series, configuration)
     report = validate(dict(
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
-        decision_support=decision_support, parent_ladder=parent_ladder, decision_uplift=decision_uplift), configuration)
+        decision_support=decision_support, parent_ladder=parent_ladder, decision_uplift=decision_uplift), configuration, started)
     print(SECTION_RULE, "\n✓ monthly run complete · tables in", configuration.outdir)
     return dict(fine_table=fine_table, units=units, series_card=series_card, forecast=forecast, validation=report)

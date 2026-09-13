@@ -42,9 +42,7 @@ from config import Config, join_columns
 from run_rate_series import PROJECTION_ROLE, ROUTE_TRAINABLE, UNIVERSE_NORMAL
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-COUNTERFACTUAL_WINDOW_MONTHS = 12      # months with truth judged by the walk-forward
-MIN_HISTORY_FOR_COUNTERFACTUAL = 6     # a cell needs this much past to be judged
-MAX_PAIRS = 15                         # pairs explode combinatorially: the top by money
+# (window, min history and max pairs are Config parameters: see config.py, phase 1.2)
 RATE_BRANCH = "tasa"
 
 
@@ -144,7 +142,7 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
             pair_rows.append(dict(rama=branch, par=f"{a}×{b}", eta2_par=round(eta_pair, 4),
                                   interaccion=round(eta_pair - max(eta_a, eta_b), 4)))
     pairs = pd.DataFrame(pair_rows, columns=["rama", "par", "eta2_par", "interaccion"])
-    return decision, pairs.sort_values("interaccion", ascending=False).head(MAX_PAIRS)
+    return decision, pairs.sort_values("interaccion", ascending=False).head(configuration.eta2_max_pairs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -156,57 +154,80 @@ def counterfactual_and_decomposition(units: pd.DataFrame, configuration: Config)
 
     INPUT:   units with tasa (history) · configuration.
     OUTPUT:  (counterfactual, decomposition).
-             counterfactual: celda, mes, tasa_real, tasa_plano, tasa_seg, err_plano_pp,
+             counterfactual: celda_id, mes, tasa_real, tasa_plano, tasa_seg, err_plano_pp,
              err_seg_pp, ahorro_usd, gana_segmentado (0/1), cota_celda_pp.
-             decomposition: celda, mes, delta_agregado_pp, delta_comportamiento_pp,
+             decomposition: celda_id, mes, delta_agregado_pp, delta_comportamiento_pp,
              delta_composicion_pp (vs the previous month with truth).
-    RULES:   for month t only data ≤ t−1 is used; the weights of t are the real pipeline
-             of t (known data). Saving = (|err_plano| − |err_seg|) × pipeline$ of t,
-             signed. Kitagawa: Δ = Σ w̄·Δp + Σ p̄·Δw with midpoint weights/rates.
-    EDGE CASES: cells with fewer than MIN_HISTORY_FOR_COUNTERFACTUAL past months are skipped.
+    RULES:   for month t only data ≤ t−1 is used (cumulative sums shifted by one month);
+             the weights of t are the real pipeline of t (known data). Saving =
+             (|err_plano| − |err_seg|) × pipeline$ of t, signed. Kitagawa: Δ = Σ w̄·Δp +
+             Σ p̄·Δw with midpoint weights/rates, vs the cell's previous month with truth.
+    EDGE CASES: cells with fewer than `counterfactual_min_history_months` past months are skipped.
+    NOTE:    vectorized (one pass of cumulative sums), so it scales with the number of
+             rows, not with cells × months × groupby calls.
     """
     period, ren_col, pipe_col, usd_col = (configuration.period_col, configuration.renewed_units_col,
                                           configuration.pipeline_units_col, configuration.pipeline_usd_col)
     history = units[(units["universo"] == UNIVERSE_NORMAL) & units["tasa"].notna() & (units["sintetica"] == 0)].copy()
-    history["celda"] = join_columns(history, configuration.business_mandatory_dims)
-    months = sorted(history[period].unique())[-COUNTERFACTUAL_WINDOW_MONTHS:]
-    cf_rows, kit_rows = [], []
-    for cell, cell_rows in history.groupby("celda"):
-        cell_months = sorted(cell_rows[period].unique())
-        for t in months:
-            past, now = cell_rows[cell_rows[period] < t], cell_rows[cell_rows[period] == t]
-            if past[period].nunique() < MIN_HISTORY_FOR_COUNTERFACTUAL or now.empty:
-                continue
-            real = now[ren_col].sum() / now[pipe_col].sum()
-            flat = past[ren_col].sum() / past[pipe_col].sum()
-            series_rates = past.groupby("fs_id").apply(lambda s: s[ren_col].sum() / max(s[pipe_col].sum(), 1), include_groups=False)
-            weights = now.groupby("fs_id")[pipe_col].sum()
-            segmented = float(np.average(series_rates.reindex(weights.index).fillna(flat), weights=weights))
-            pipeline_usd = now[usd_col].sum()
-            bound = binomial_se_pp(real, now[pipe_col].sum()) * configuration.z
-            cf_rows.append(dict(celda=cell, mes=str(t), tasa_real=round(real, 4), tasa_plano=round(flat, 4),
-                                tasa_seg=round(segmented, 4), err_plano_pp=round(100 * (flat - real), 2),
-                                err_seg_pp=round(100 * (segmented - real), 2),
-                                ahorro_usd=round((abs(flat - real) - abs(segmented - real)) * pipeline_usd, 2),
-                                gana_segmentado=int(abs(segmented - real) < abs(flat - real)), cota_celda_pp=round(bound, 2)))
-            # Kitagawa vs the previous month with truth
-            previous_months = [m for m in cell_months if m < t]
-            if not previous_months:
-                continue
-            before = cell_rows[cell_rows[period] == previous_months[-1]]
-            p0 = before.groupby("fs_id").apply(lambda s: s[ren_col].sum() / max(s[pipe_col].sum(), 1), include_groups=False)
-            p1 = now.groupby("fs_id").apply(lambda s: s[ren_col].sum() / max(s[pipe_col].sum(), 1), include_groups=False)
-            w0 = before.groupby("fs_id")[pipe_col].sum() / before[pipe_col].sum()
-            w1 = weights / weights.sum()
-            ids = p0.index.union(p1.index)
-            p0, p1 = p0.reindex(ids).fillna(p1.reindex(ids)), p1.reindex(ids).fillna(p0.reindex(ids))
-            w0, w1 = w0.reindex(ids).fillna(0), w1.reindex(ids).fillna(0)
-            behaviour = float(np.sum((w0 + w1) / 2 * (p1 - p0)))
-            composition = float(np.sum((p0 + p1) / 2 * (w1 - w0)))
-            kit_rows.append(dict(celda=cell, mes=str(t), delta_agregado_pp=round(100 * (behaviour + composition), 2),
-                                 delta_comportamiento_pp=round(100 * behaviour, 2),
-                                 delta_composicion_pp=round(100 * composition, 2)))
-    return pd.DataFrame(cf_rows), pd.DataFrame(kit_rows)
+    history["celda_id"] = join_columns(history, configuration.business_mandatory_dims)
+    empty = (pd.DataFrame(columns=["celda_id", "mes", "tasa_real", "tasa_plano", "tasa_seg", "err_plano_pp", "err_seg_pp",
+                                   "ahorro_usd", "gana_segmentado", "cota_celda_pp"]),
+             pd.DataFrame(columns=["celda_id", "mes", "delta_agregado_pp", "delta_comportamiento_pp", "delta_composicion_pp"]))
+    if history.empty:
+        return empty
+    # [1] one row per (cell, series, month), with the series' PAST (≤ t−1) as shifted cumsums
+    monthly = (history.groupby(["celda_id", "fs_id", period], as_index=False)
+               .agg(ren=(ren_col, "sum"), pipe=(pipe_col, "sum"), usd=(usd_col, "sum")).sort_values([period]))
+    grouped = monthly.groupby(["celda_id", "fs_id"])
+    monthly["ren_past"] = grouped["ren"].cumsum() - monthly["ren"]
+    monthly["pipe_past"] = grouped["pipe"].cumsum() - monthly["pipe"]
+    # [2] the cell's past and its number of past months
+    cell = monthly.groupby(["celda_id", period], as_index=False).agg(ren=("ren", "sum"), pipe=("pipe", "sum"), usd=("usd", "sum"))
+    cell = cell.sort_values(period)
+    cell_grouped = cell.groupby("celda_id")
+    cell["ren_past"] = cell_grouped["ren"].cumsum() - cell["ren"]
+    cell["pipe_past"] = cell_grouped["pipe"].cumsum() - cell["pipe"]
+    cell["meses_pasados"] = cell_grouped.cumcount()
+    cell["mes_anterior"] = cell_grouped[period].shift(1)
+    cell["tasa_real"] = cell["ren"] / cell["pipe"].replace(0, np.nan)
+    cell["tasa_plano"] = cell["ren_past"] / cell["pipe_past"].replace(0, np.nan)
+    window = sorted(history[period].unique())[-configuration.counterfactual_window_months:]
+    judged = cell[(cell["meses_pasados"] >= configuration.counterfactual_min_history_months) & cell[period].isin(window)]
+    # [3] segmented: the past rate of each series, weighted by the real pipeline of t
+    rows = monthly.merge(judged[["celda_id", period, "tasa_plano"]], on=["celda_id", period])
+    rows["tasa_serie_pasada"] = (rows["ren_past"] / rows["pipe_past"].replace(0, np.nan)).fillna(rows["tasa_plano"])
+    rows["peso_x_tasa"] = rows["pipe"] * rows["tasa_serie_pasada"]
+    segmented = rows.groupby(["celda_id", period])["peso_x_tasa"].sum() / rows.groupby(["celda_id", period])["pipe"].sum()
+    judged = judged.merge(segmented.rename("tasa_seg").reset_index(), on=["celda_id", period])
+    judged["err_plano_pp"] = 100 * (judged["tasa_plano"] - judged["tasa_real"])
+    judged["err_seg_pp"] = 100 * (judged["tasa_seg"] - judged["tasa_real"])
+    judged["ahorro_usd"] = (judged["err_plano_pp"].abs() - judged["err_seg_pp"].abs()) / 100 * judged["usd"]
+    judged["gana_segmentado"] = (judged["err_seg_pp"].abs() < judged["err_plano_pp"].abs()).astype(int)
+    judged["cota_celda_pp"] = [binomial_se_pp(r, n) * configuration.z for r, n in zip(judged["tasa_real"], judged["pipe"])]
+    counterfactual = judged.assign(mes=judged[period].astype(str))[
+        ["celda_id", "mes", "tasa_real", "tasa_plano", "tasa_seg", "err_plano_pp", "err_seg_pp", "ahorro_usd", "gana_segmentado", "cota_celda_pp"]
+    ].round({"tasa_real": 4, "tasa_plano": 4, "tasa_seg": 4, "err_plano_pp": 2, "err_seg_pp": 2, "ahorro_usd": 2, "cota_celda_pp": 2})
+    # [4] Kitagawa vs the cell's previous month with truth: outer join of the series present now / before
+    now = monthly.merge(judged[["celda_id", period, "mes_anterior"]], on=["celda_id", period]).dropna(subset=["mes_anterior"])
+    now["p1"] = now["ren"] / now["pipe"].replace(0, np.nan)
+    now["w1"] = now["pipe"] / now.groupby(["celda_id", period])["pipe"].transform("sum")
+    before = monthly.rename(columns={period: "mes_anterior"})[["celda_id", "fs_id", "mes_anterior", "ren", "pipe"]]
+    before["p0"] = before["ren"] / before["pipe"].replace(0, np.nan)
+    before["w0"] = before["pipe"] / before.groupby(["celda_id", "mes_anterior"])["pipe"].transform("sum")
+    keys = judged[["celda_id", period, "mes_anterior"]].dropna()
+    before = before.merge(keys, on=["celda_id", "mes_anterior"])
+    joined = now[["celda_id", "fs_id", period, "p1", "w1"]].merge(before[["celda_id", "fs_id", period, "p0", "w0"]],
+                                                                on=["celda_id", "fs_id", period], how="outer")
+    joined["p0"], joined["p1"] = joined["p0"].fillna(joined["p1"]), joined["p1"].fillna(joined["p0"])
+    joined["w0"], joined["w1"] = joined["w0"].fillna(0), joined["w1"].fillna(0)
+    joined["comportamiento"] = (joined["w0"] + joined["w1"]) / 2 * (joined["p1"] - joined["p0"])
+    joined["composicion"] = (joined["p0"] + joined["p1"]) / 2 * (joined["w1"] - joined["w0"])
+    terms = joined.groupby(["celda_id", period], as_index=False)[["comportamiento", "composicion"]].sum()
+    decomposition = pd.DataFrame(dict(celda_id=terms["celda_id"], mes=terms[period].astype(str),
+                                      delta_agregado_pp=(100 * (terms["comportamiento"] + terms["composicion"])).round(2),
+                                      delta_comportamiento_pp=(100 * terms["comportamiento"]).round(2),
+                                      delta_composicion_pp=(100 * terms["composicion"]).round(2)))
+    return counterfactual.reset_index(drop=True), decomposition
 
 
 def mix_risk_by_cell(decomposition: pd.DataFrame) -> pd.Series:
@@ -214,7 +235,7 @@ def mix_risk_by_cell(decomposition: pd.DataFrame) -> pd.Series:
     aggregate rate moves by composition alone. The `riesgo_mix_pp` attribute of the card."""
     if decomposition.empty:
         return pd.Series(dtype=float, name="riesgo_mix_pp")
-    return decomposition.groupby("celda")["delta_composicion_pp"].apply(lambda s: float(np.mean(np.abs(s)))).rename("riesgo_mix_pp")
+    return decomposition.groupby("celda_id")["delta_composicion_pp"].apply(lambda s: float(np.mean(np.abs(s)))).rename("riesgo_mix_pp")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════

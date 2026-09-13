@@ -80,7 +80,7 @@ def test_analysis_taxonomy_1() -> dict:
     RECORDER.check(technique.loc["EU|0|0|0|0|A|web", "tecnica_origen"] == "campeon" and technique.loc["NA|0|0|0|0|A|web", "tecnica"] == "T2_mean",
                    "a champion on the seasonal series; the challenger on a flat one")
     decomposition = results["dimensions"]["mix_shift_decomposition"]
-    na = decomposition[decomposition["celda"] == "NA"]
+    na = decomposition[decomposition["celda_id"] == "NA"]
     RECORDER.check(na["delta_composicion_pp"].abs().mean() > 0.05, "Simpson cell NA shows a composition term in the Kitagawa decomposition")
     holdout = results["backtest"]["backtest_holdout"]
     RECORDER.check(holdout["mes_objetivo"].min() == "2026-01" and holdout["mes_objetivo"].max() == "2026-08",

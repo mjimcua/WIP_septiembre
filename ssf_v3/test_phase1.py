@@ -121,7 +121,7 @@ def test_mix_shift() -> None:
         with quiet():
             units, summary = run_rate_series.build_rate_series(labeled, configuration)
         counterfactual, decomposition = analysis_dimensions.counterfactual_and_decomposition(units, configuration)
-        RECORDER.check(len(counterfactual) > 0 and set(counterfactual["celda"]) == {"EU"},
+        RECORDER.check(len(counterfactual) > 0 and set(counterfactual["celda_id"]) == {"EU"},
                        "one counterfactual row per cell × month of the window")
         pipeline_by_month = (units[units["tasa"].notna()].assign(mes=units["period"].astype(str))
                              .groupby("mes")["total_tr_usd"].sum())

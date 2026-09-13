@@ -73,33 +73,38 @@ def fill_history_gaps(labeled_units: pd.DataFrame, configuration: Config) -> pd.
              the projection). The rate of a synthetic row is set later to NaN: a month
              with no expirations does not inform the rate (gap policy "no_rate").
     EDGE CASES: a series with no gaps adds nothing.
+    NOTE:    built as ONE frame (cartesian months × series, minus the existing), not row
+             by row: with thousands of series the per-row version took seconds per phase.
     """
     units = labeled_units.copy()
     units["sintetica"] = 0
     period_column, role_column = configuration.period_col, configuration.dataset_role_col
-    synthetic_rows = []
-    trainable = units[(units["universo"] == UNIVERSE_NORMAL) & (units["ruta"] == ROUTE_TRAINABLE)]
-    for series_id, series_rows in trainable.groupby("fs_id"):
-        history = series_rows[series_rows[role_column] != PROJECTION_ROLE]
-        if history.empty:
-            continue
-        full_range = pd.period_range(history[period_column].min(), history[period_column].max(), freq="M")
-        missing = full_range.difference(pd.PeriodIndex(history[period_column]))
-        for month in missing:
-            template = series_rows.iloc[0].copy()
-            template[period_column] = month
-            previous = history[history[period_column] < month]
-            template[role_column] = previous[role_column].iloc[-1] if len(previous) else "train"
-            for measure in configuration.core_measures:
-                template[measure] = 0.0
-            template[configuration.current_month_col] = 0
-            template["sintetica"] = 1
-            template["fu_id"] = f"{series_id}|{month}"
-            template["fu_key"] = hash_key(template["fu_id"])
-            synthetic_rows.append(template)
-    if synthetic_rows:
-        units = pd.concat([units, pd.DataFrame(synthetic_rows)], ignore_index=True)
-    return units
+    trainable = units[(units["universo"] == UNIVERSE_NORMAL) & (units["ruta"] == ROUTE_TRAINABLE)
+                      & (units[role_column] != PROJECTION_ROLE)]
+    if trainable.empty:
+        return units
+    span = trainable.groupby("fs_id")[period_column].agg(["min", "max"])
+    full_months = pd.concat([pd.DataFrame({"fs_id": series_id, period_column: pd.period_range(first, last, freq="M")})
+                             for series_id, (first, last) in span.iterrows()], ignore_index=True)
+    existing = trainable[["fs_id", period_column]].drop_duplicates()
+    missing = full_months.merge(existing, on=["fs_id", period_column], how="left", indicator=True)
+    missing = missing[missing["_merge"] == "left_only"].drop(columns="_merge")
+    if missing.empty:
+        return units
+    template = trainable.sort_values(period_column).drop_duplicates("fs_id").set_index("fs_id")
+    synthetic = template.loc[missing["fs_id"]].reset_index()
+    synthetic[period_column] = missing[period_column].to_numpy()
+    for measure in configuration.core_measures:
+        synthetic[measure] = 0.0
+    synthetic[configuration.current_month_col] = 0
+    synthetic["sintetica"] = 1
+    synthetic["fu_id"] = synthetic["fs_id"] + "|" + synthetic[period_column].astype(str)
+    synthetic["fu_key"] = synthetic["fu_id"].map(hash_key)
+    # role = the role of the previous real month of the series (train, or test once the test starts)
+    role_by_month = trainable[["fs_id", period_column, role_column]].sort_values(period_column)
+    synthetic = pd.merge_asof(synthetic.sort_values(period_column).drop(columns=[role_column]), role_by_month,
+                              on=period_column, by="fs_id", direction="backward")
+    return pd.concat([units, synthetic[units.columns]], ignore_index=True)
 
 
 def compute_row_rates(units: pd.DataFrame, configuration: Config) -> pd.DataFrame:

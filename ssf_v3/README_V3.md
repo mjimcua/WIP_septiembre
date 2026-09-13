@@ -6,8 +6,10 @@ bandas asimétricas calibradas, uplift por celda, y horizonte extendido con pipe
 simulada. Todo en un directorio plano; nada del legacy.
 
 Lee primero `POR_QUE_ESTE_FORECAST.md` (por qué así) y `GUION_V3.md` (qué hace cada
-pieza); `GLOSARIO.md` para los términos; `ANALYSIS_POINTS.md` para qué mirar cuando
-corra sobre datos reales; `USO_NOTEBOOK.md` para trabajar desde un notebook.
+pieza); `GLOSARIO.md` para los términos; `PARAMETROS.md` para cada parámetro y su valor
+por defecto justificado; `AUDITORIA.md` para auditar una serie (Power BI y notebook);
+`ANALYSIS_POINTS.md` para qué mirar cuando corra sobre datos reales; `PENSAR_JUNTOS.md`
+para las preguntas abiertas de ajuste; `USO_NOTEBOOK.md` para trabajar desde un notebook.
 
 ## Ejecutar
 
@@ -76,6 +78,7 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 | `run_uplift.py` | RUN | 4 ratio de sumas por celda, padre por punto de partida, bootstrap → `decision_uplift` |
 | `run_forecast_assembly.py` | RUN | 5 horizonte extendido, ensamblaje con orígenes, bandas, agregación, informes |
 | `run_validation.py` | ambos | panel INTEGRITY / DOCTRINE / QUALITY |
+| `audit_series.py` | ambos | `audit_series(fs_id, configuration)`: la explicación completa de una serie desde las tablas (AUDITORIA.md) |
 | `pipeline.py` | — | `run_analysis`, `run_pipeline`, `key_bridge`, horizontes |
 | `main.py` | — | entrada de producción (`python main.py` / `python main.py analysis`) |
 | `synthetic_v3.py` | test | dataset sintético con un escenario por feature |
@@ -93,9 +96,10 @@ Fase 4: `uplift_chain`, `decision_uplift`. Fase 5: `key_bridge`, `fu_extended`,
 `validation_report`.
 
 Ids y claves: `fu_id`/`fu_key` (unidad), `comb_id`/`comb_key` (combinación de extras de
-revalorización), `fu_comb_key` (fila del raw), `fs_id`/`fs_key` (serie), `id_estimacion`
-(patrón del pariente elegido: `EU|SIG=neg|A|*`), `uplift_cell_id`/`uplift_cell_key`,
-`celda_id` (celda mandatory). `key_bridge` une todos por fila del raw.
+revalorización), `fu_comb_key` (fila del raw), `fs_id`/`fs_key` (serie), `id_estimacion`/
+`estimacion_key` (patrón del pariente elegido: `EU|SIG=neg|A|*`), `uplift_cell_id`/`uplift_cell_key`,
+`celda_id`/`celda_key` (celda mandatory). Las claves se estampan al escribir en toda tabla
+que lleve el id (`Config.stamp_derived_keys`); `key_bridge` une todos por fila del raw.
 
 ## Niveles de riesgo
 

@@ -68,8 +68,8 @@ EXPECTED_PRODUCTION_TIMEVARYING_DIMS = {"softcancel": "negative"}
 EXPECTED_PRODUCTION_EXTRA_REVALORIZACION = [
     "price_cap", "msrp_increased", "discount_interval", "prev_OperationGroup"]
 EXPECTED_BUSINESS_PARAMETERS = {"support_floor": 30.0, "z": 1.645, "rate_cap": 0.95,
-                                "k_cred": 60.0, "k_uplift": 24.0,
-                                "gap_rate_policy": "no_rate"}
+                                "k_cred": 60.0, "uplift_floor": 30.0, "uplift_cap": 3.0,
+                                "gap_rate_policy": "no_rate", "backtest_max_targets": 24}
 
 # Physical names the reference and the BI already depend on. Sampled, not exhaustive: the
 # full registry is checked for size and for prefixing.

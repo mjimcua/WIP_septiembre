@@ -1,4 +1,4 @@
-"""config.py — SFF v2 · RUN · the configuration contract.
+"""config.py — SFF v3 · the configuration contract.
 
 This module is the single place where the framework learns four things:
 
@@ -23,9 +23,9 @@ This module is the single place where the framework learns four things:
                                query; tests: the synthetic dataset). Nothing in `run/`
                                reads a file or a query.
 
-Numerical contract: this file is a verbose rewrite of legacy `config.py`. The style
-changed; the numbers did not. Any change in a key, an id, a column list or a written table
-must be caught by `test_pipeline.py` against the reference output.
+Every tunable parameter lives in the TUNABLE PARAMETERS block of `Config`, grouped by
+phase, each with its purpose, the reason for its default and what to look at before
+changing it. PARAMETROS.md is the reader-facing version of that block.
 
 Vocabulary: `extra_renovacion` / `extra_revalorizacion` are the doctrine names of the
 two extra groups (the word "covariates" is forbidden). Persisted column names and
@@ -218,7 +218,7 @@ class Config:
     any forecast quantity, and does not decide anything measured: η², chosen technique
     and error bands are decisions of ANALYSIS, persisted in the decision tables
     (DISENO_SPLIT §3). Only the versioned business parameters live here
-    (`support_floor`, `z`, `rate_cap`, `k_cred`, `k_uplift`, `gap_rate_policy`):
+    (the TUNABLE PARAMETERS block below, grouped by phase):
     they are decisions of the repository, not measurements of a run.
 
     USAGE. Subclass it in your main and override `read_raw()`; `Config()` fields with
@@ -269,43 +269,180 @@ class Config:
     # optional semantic labels (column, value, label); empty on purpose in production
     semantic_labels: list = field(default_factory=list)
 
-    # ─── business parameters (versioned decisions; DISENO_SPLIT §3) ────────────────
-    # A missing month means "no contracts were due": the rate is undefined (0/0), NOT 0%.
-    # "no_rate" keeps the gap row for continuity but leaves its rate NaN, so no
-    # technique ever sees a false 0% month. "zero_rate" restores the legacy behaviour.
-    gap_rate_policy: str = "no_rate"
-    support_floor: float = 30.0
-    z: float = 1.645          # 90% two-sided
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # TUNABLE PARAMETERS — grouped by phase. Every field says WHAT it controls, WHY the
+    # default, and WHAT TO WATCH before changing it. They are versioned decisions of the
+    # repository (DISENO_SPLIT §3): a change here is a change of contract, documented
+    # in ASUNCIONES.md. Parameters that are pure algorithm constants (smoothing alphas
+    # of the techniques, the logit clip, the variance floor) stay in their modules and
+    # are listed in PARAMETROS.md, not here.
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    # ─── the binomial reference (every phase) ──────────────────────────────────────
+    # Confidence multiplier for every interval and bound. 1.645 = 90 % two-sided: the
+    # level the business reads ("nine times out of ten"). 1.96 would give 95 % and bands
+    # ~20 % wider; the hold-out calibration (P3.2) tells whether 90 % is honoured.
+    z: float = 1.645
+    # Renewal rates above this are saturated. A 95 % ceiling keeps a small series with a
+    # lucky 100 % month from forecasting 100 %; no real cohort renews above it. Raise it
+    # only if the calibration table (tv_calibration) shows real cohorts above 95 %.
     rate_cap: float = 0.95
-    k_cred: float = 60.0      # default credibility k when no estimate exists for the parent
-    k_uplift: float = 24.0
-    # ─── v3 · backtest, horizon and uplift parameters ─────────────────────────────
-    # first month of the hold-out report: months >= this with truth are "the 2026 months
-    # that already happened"; None = last 12 months with truth
+
+    # ─── phase 1.1 · rate series ───────────────────────────────────────────────────
+    # A missing month means "no contracts were due": the rate is undefined (0/0), NOT 0 %.
+    # "no_rate" is the only implemented policy (the synthetic gap row keeps the series
+    # continuous but its rate is NaN, so no technique ever sees a false 0 % month). The
+    # field exists so the decision is visible, not so it can be flipped.
+    gap_rate_policy: str = "no_rate"
+
+    # ─── phase 1.2 · dimension separation and mix-shift (ANALYSIS) ─────────────────
+    # Months with truth judged by the walk-forward Simpson counterfactual (flat vs
+    # segmented, each month against what happened). 12 = one full year of verdicts, so a
+    # seasonal cell is judged in every season. More months = more evidence, older past.
+    counterfactual_window_months: int = 12
+    # A cell needs this many past months before its first verdict; below it the "flat"
+    # rate is itself noise and the comparison says nothing. 6 = half a year.
+    counterfactual_min_history_months: int = 6
+    # Pairs of dimensions kept in decision_eta2_pairs (pairs explode combinatorially with
+    # many dims); the top by interaction. 15 is what fits on one screen.
+    eta2_max_pairs: int = 15
+
+    # ─── phase 1.3 · support ladder and credibility (RUN) ──────────────────────────
+    # The support floor: median monthly pipeline units a relative needs to be "enough".
+    # 30 is the dial at ±15 pp (90 %, p=.5): below it a month's rate says almost nothing.
+    # It is the one parameter that moves the whole ladder: raise it and more series
+    # borrow (and level B/C grow); lower it and more series keep noisy own rates. The
+    # money by risk level (risk_levels) is the table to look at before touching it.
+    support_floor: float = 30.0
+    # Default credibility k (Bühlmann-Straub) when a relative has fewer than 3 siblings
+    # with history, so no between/within variance can be estimated. z = n/(n+k): with
+    # k=60 a series with n=30 keeps 33 % of its own rate; with n=12, 17 %. 60 ≈ two floors:
+    # "you need twice the floor to be believed half". Estimated k's (decision_support.k)
+    # override it wherever there are siblings.
+    k_cred: float = 60.0
+    # Risk level "B_prestado" vs "C_lejano": a relative at rung ≤ 2 (same sign / extra
+    # annulled) is close; from rung 3 (the mandatory cell or above) it is far. The
+    # distinction is the money report's, not the estimate's.
+    close_relative_max_rung: int = 2
+    # Months of history a series needs to be level "A_propio" even when it has support:
+    # one full year, so a seasonal series has seen every season.
+    own_level_min_history_months: int = 12
+
+    # ─── phase 2 · dynamics (ANALYSIS) ─────────────────────────────────────────────
+    # Months of history before seasonality or trend are even measured (13 = one full
+    # cycle plus one month, the minimum for a calendar profile). Below it the gate is
+    # "temporal" and the mean is used.
+    seasonality_min_months: int = 13
+    # Seasonal amplitude / yearly slope must exceed this many times the binomial bound
+    # of the pool's typical month to be declared. 2× = the movement is at least twice
+    # what sampling alone would produce. Lower to 1.5 to be more sensitive (more series
+    # compete with seasonal/trend techniques; the backtest still has the last word).
+    signal_multiple_of_bound: float = 2.0
+    # φ (observed variance / binomial variance) above which the console says "there is
+    # an engine". Informational: it flags where a complex technique can pay off.
+    phi_engine_threshold: float = 1.5
+    # Horizon after which a detected trend is considered fully damped (the inference
+    # cap): 6 months. Beyond it the techniques' own damping (φ=0.9) has removed most of
+    # the trend anyway; the label is what the forecast_by_level reader sees.
+    trend_horizon_months: int = 6
+
+    # ─── phase 3 · backtest, technique, bands (ANALYSIS) ───────────────────────────
+    # First month of the hold-out report ("the 2026 months that already happened"):
+    # months ≥ this with truth are reported as the out-of-sample exam. None = the last
+    # 12 months with truth. Training always uses the WHOLE history before each origin.
     backtest_test_start: Optional[str] = None
-    backtest_min_history_months: int = 8      # months of history before the first origin
-    backtest_min_predictions: int = 6         # evidence needed to dethrone the challenger
+    # Months of history before the first origin. 8 = enough for every non-seasonal
+    # technique to be eligible (ma6, ses, drift); seasonal ones wait for 13 anyway.
+    backtest_min_history_months: int = 8
+    # The judge uses only the most recent targets (the hold-out is inside them). 24 =
+    # two years of verdicts, so both seasons and the recent regime count. Halve it if
+    # the backtest is slow; the champion changes little, the bands lose evidence.
+    backtest_max_targets: int = 24
+    # Horizons judged. Sparse on purpose (bands are monotone in h, so the nearest lower
+    # judged horizon is a safe band for the ones in between); the forecast horizon H is
+    # added automatically. [1,2,3,4] for the operational months, 6/9/12 for the year.
+    backtest_horizons: list = field(default_factory=lambda: [1, 2, 3, 4, 6, 9, 12])
+    # Two-stage judge: every eligible technique is screened at these horizons to choose
+    # the champion; then only champion + challenger are judged at every horizon. {1,3,6}
+    # covers the operational month, the quarter and the half-year with ~3× less cost.
+    backtest_screen_horizons: list = field(default_factory=lambda: [1, 3, 6])
+    # Parallel workers for the backtest (1 = sequential; identical result). Useful with
+    # thousands of estimation ids on a multi-core machine; harmless otherwise.
+    backtest_workers: int = 1
+    # Minimum predictions a technique needs to dethrone the challenger: 6 = at least half
+    # a year of verdicts at the screen horizons.
+    backtest_min_predictions: int = 6
+    # The challenger: the technique a champion must beat. The mean of the whole history
+    # is the natural one — it is the best forecast wherever φ ≈ 1.
     challenger_technique: str = "T2_mean"
-    challenger_margin_normalized: float = 0.10  # in units of the binomial se
-    band_min_predictions: int = 20            # below this, bands come from the family
+    # Margin, in units of the binomial error, by which a champion must beat the
+    # challenger (and within which techniques tie → the richer family wins). 0.10 = a
+    # tenth of a sampling error: enough to ignore luck, small enough to let real signal
+    # through. The leaderboard (P3.1) shows how far apart techniques really are.
+    challenger_margin_normalized: float = 0.10
+    # Predictions an (id, h) needs for its OWN error quantiles; below it the band comes
+    # from the family (same technique, every id). 20 predictions make a p5/p95 that is
+    # not just the extremes.
+    band_min_predictions: int = 20
+    # The band quantiles of the signed normalized error: p5 / p95 → a 90 % band, matching
+    # z. Widen to .025/.975 for 95 %. The hold-out "% inside band" is the check.
     band_low_quantile: float = 0.05
     band_high_quantile: float = 0.95
-    max_forecast_horizon: Optional[int] = None   # None = derived from the projection
-    # extended horizon: simulate the pipeline beyond the known projection up to this month
-    extended_horizon_end: Optional[str] = None   # e.g. "2027-12"; None = no extension
-    renewal_term_months: int = 12             # a renewed contract re-enters the pipeline after this
-    acquisition_factor: Optional[float] = None   # None = estimated from history
-    # uplift
-    uplift_floor: float = 30.0                # renewers per cell to estimate alone
+    # Share of near-zero months (rate < 2 %) above which a series is "intermittent" and
+    # the SBA technique competes. 30 %: below it, the zeros are just bad months.
+    intermittent_zero_share: float = 0.30
+
+    # ─── phase 4 · uplift (RUN) ─────────────────────────────────────────────────────
+    # Renewers a cell needs to use its own ratio; below it the parent's (starting-point
+    # extras kept) or the mandatory cell's. 30, like the rate floor: an uplift is a
+    # ratio of the money of ~30 renewers before it stops jumping.
+    uplift_floor: float = 30.0
+    # Ratios above this are clipped and flagged `recortado`. 3.0: a renewer paying three
+    # times the pipeline AUV is a data problem (a bundle, a currency), not a revaluation.
     uplift_cap: float = 3.0
-    uplift_parent_keep_columns: list = field(default_factory=list)   # "starting point" extras kept in the parent
+    # extra_revalorizacion columns KEPT in the parent cell: the "starting point" (e.g.
+    # newcust) that a small cell must not lose when it borrows. Empty = the parent is
+    # the mandatory cell.
+    uplift_parent_keep_columns: list = field(default_factory=list)
+    # Bootstrap resamples for the uplift band. 200 gives a stable p5/p95 in milliseconds
+    # (numpy resampling); 1000 changes the third decimal.
     uplift_bootstrap_samples: int = 200
-    # timevarying model versions (as-of flag per column), informational
+
+    # ─── phase 5 · assembly and extended horizon (RUN) ─────────────────────────────
+    # None = derived: months from the last month with truth to the end of the forecast
+    # (known projection or extended horizon). Set it only to cut the forecast short.
+    max_forecast_horizon: Optional[int] = None
+    # Simulate the pipeline beyond the known projection up to this month ("2027-12").
+    # None = no extension. Everything built on simulated rows is flagged (simulada = 1)
+    # and reported (horizon_report_total.pct_simulado).
+    extended_horizon_end: Optional[str] = None
+    # A renewed contract re-enters the pipeline after this many months: the term. 12 for
+    # yearly subscriptions. A mixed-term portfolio needs a term column (not modelled yet).
+    renewal_term_months: int = 12
+    # pipeline(m) = renewed(m − term) × factor. None = estimated from history per series
+    # (median of pipeline(t) / renewed(t − term) = 1 + acquisitions / renewals; global
+    # fallback). Set a number to impose a business assumption on acquisition.
+    acquisition_factor: Optional[float] = None
+    # Pairs (t, t − term) a series needs for its own acquisition factor; below it the
+    # global one. 3 = a median that is not a single point.
+    acquisition_min_pairs: int = 3
+    # The total's relative band may narrow from one month to the next when the mix leans
+    # toward well-supported series; a narrowing beyond this many percentage points of the
+    # total is flagged in horizon_report_total.banda_monotona. Per id the band never
+    # narrows (by construction); this is a mix signal, not a calibration one.
+    band_narrowing_tolerance_pct: float = 1.0
+
+    # ─── governance ────────────────────────────────────────────────────────────────
+    # Version (as-of) of the model that produces each timevarying flag, stamped on the
+    # calibration table so a flag's realized rate can be compared across versions.
     timevarying_model_version: dict = field(default_factory=dict)
+    # The monthly run warns when the decision tables are older than this. 6 months: two
+    # seasons; the ladder and the champions should be re-judged at least twice a year.
     decision_max_age_months: int = 6
+    # Seed of every random draw (uplift bootstrap): the same run gives the same band.
     random_seed: int = 7
 
-    # ─── output ─────────────────────────────────────────────────────────────────────
+    # ─── output and persistence ────────────────────────────────────────────────────
     outdir: str = "./salida"
 
     # ─── SQL persistence (SQLAlchemy) ───────────────────────────────────────────────
@@ -740,6 +877,20 @@ class Config:
                                chunksize=self.sql_chunksize, dtype=text_column_types)
         return effective_write_mode
 
+    # Id column → key column stamped on every written table that carries the id, so every
+    # table joins to the audit dimensions (series, estimation id, uplift cell, mandatory
+    # cell) on the same short keys in the BI. The ids stay: they are human-readable.
+    DERIVED_KEY_COLUMNS = {"fs_id": "fs_key", "id_estimacion": "estimacion_key",
+                           "uplift_cell_id": "uplift_cell_key", "celda_id": "celda_key"}
+
+    def stamp_derived_keys(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Add the key column of every id column present (hash_key), if not already there."""
+        stamped = frame.copy()
+        for id_column, key_column in self.DERIVED_KEY_COLUMNS.items():
+            if id_column in stamped.columns and key_column not in stamped.columns:
+                stamped[key_column] = stamped[id_column].astype(str).map(hash_key)
+        return stamped
+
     def write(self, frame: pd.DataFrame, logical_table_name: str) -> pd.DataFrame:
         """Persist one star-schema table with automatic traceability.
 
@@ -761,7 +912,7 @@ class Config:
           [5] Report rows, destination and throughput.
         """
         # [1] Period/Interval → str, nested objects → error
-        sanitized_frame = self._sanitize_for_persistence(frame)
+        sanitized_frame = self.stamp_derived_keys(self._sanitize_for_persistence(frame))
 
         # [2] every persisted row knows when and by which execution it was written
         sanitized_frame["process_date"] = datetime.datetime.now().isoformat(timespec="seconds")

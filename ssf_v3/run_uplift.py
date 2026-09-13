@@ -37,7 +37,7 @@ def renewer_rows(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFram
     renewers["auv_pipeline"] = renewers[configuration.pipeline_usd_col] / renewers[configuration.pipeline_units_col].clip(lower=1)
     renewers["uplift_fila"] = (renewers[configuration.renewed_usd_col] / renewers[configuration.renewed_units_col]) / renewers["auv_pipeline"]
     renewers["uplift_cell_id"] = join_columns(renewers, configuration.uplift_cell_columns)
-    renewers["mandatory_cell_id"] = join_columns(renewers, configuration.business_mandatory_dims)
+    renewers["celda_id"] = join_columns(renewers, configuration.business_mandatory_dims)
     keep = set(configuration.uplift_parent_keep_columns)
     parent_fields = [renewers[c].astype(str) if c in keep or c in configuration.business_mandatory_dims
                      else pd.Series(WILDCARD, index=renewers.index) for c in configuration.uplift_cell_columns]
@@ -52,44 +52,51 @@ def ratio_of_sums(rows: pd.DataFrame, configuration: Config) -> float:
 
 
 def bootstrap_band(rows: pd.DataFrame, configuration: Config, rng: np.random.Generator) -> tuple:
-    """p5 / p95 of the ratio over resampled renewer rows (weighted by renewed units)."""
+    """p5 / p95 of the ratio over resampled renewer rows.
+
+    NOTE:    the resampling is done on two numpy arrays (renewed$ and renewed units ×
+             pipeline AUV) with one index matrix of shape (samples × rows): no DataFrame
+             is built per sample, so a cell with 50,000 renewer rows costs milliseconds.
+    """
     if len(rows) < 2:
         return np.nan, np.nan
-    samples = []
-    for _ in range(configuration.uplift_bootstrap_samples):
-        picked = rows.sample(n=len(rows), replace=True, random_state=int(rng.integers(0, 2 ** 31 - 1)))
-        samples.append(ratio_of_sums(picked, configuration))
+    numerator = rows[configuration.renewed_usd_col].to_numpy(dtype=float)
+    denominator = (rows[configuration.renewed_units_col] * rows["auv_pipeline"]).to_numpy(dtype=float)
+    picks = rng.integers(0, len(rows), size=(configuration.uplift_bootstrap_samples, len(rows)))
+    sampled_denominator = denominator[picks].sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        samples = np.where(sampled_denominator > 0, numerator[picks].sum(axis=1) / sampled_denominator, np.nan)
     return float(np.nanquantile(samples, 0.05)), float(np.nanquantile(samples, 0.95))
 
 
 def estimate_uplift_cells(renewers: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """One row per uplift cell: own ratio, n, parent ratio, cell ratio, decision and band.
 
-    OUTPUT:  decision_uplift: uplift_cell_id, uplift_cell_key, mandatory_cell_id,
+    OUTPUT:  decision_uplift: uplift_cell_id, uplift_cell_key, celda_id,
              uplift_parent_id, n_renovadores, meses, uplift_propio, uplift_padre,
              uplift_celda, uplift, uplift_origen, banda_low, banda_high, recortado.
     """
     rng = np.random.default_rng(configuration.random_seed)
     by_parent = {pid: ratio_of_sums(g, configuration) for pid, g in renewers.groupby("uplift_parent_id")}
     n_parent = renewers.groupby("uplift_parent_id")[configuration.renewed_units_col].sum()
-    by_cell = {cid: ratio_of_sums(g, configuration) for cid, g in renewers.groupby("mandatory_cell_id")}
+    by_cell = {cid: ratio_of_sums(g, configuration) for cid, g in renewers.groupby("celda_id")}
     rows = []
     for cell_id, group in renewers.groupby("uplift_cell_id"):
         n = float(group[configuration.renewed_units_col].sum())
         own = ratio_of_sums(group, configuration)
-        parent_id, mandatory_id = group["uplift_parent_id"].iat[0], group["mandatory_cell_id"].iat[0]
+        parent_id, mandatory_id = group["uplift_parent_id"].iat[0], group["celda_id"].iat[0]
         parent, cell = by_parent.get(parent_id, np.nan), by_cell.get(mandatory_id, np.nan)
         if n >= configuration.uplift_floor and np.isfinite(own):
             chosen, origin, band_rows = own, ORIGIN_OWN, group
         elif n_parent.get(parent_id, 0) >= configuration.uplift_floor and np.isfinite(parent):
             chosen, origin, band_rows = parent, ORIGIN_PARENT, renewers[renewers["uplift_parent_id"] == parent_id]
         elif np.isfinite(cell):
-            chosen, origin, band_rows = cell, ORIGIN_CELL, renewers[renewers["mandatory_cell_id"] == mandatory_id]
+            chosen, origin, band_rows = cell, ORIGIN_CELL, renewers[renewers["celda_id"] == mandatory_id]
         else:
             chosen, origin, band_rows = NEUTRAL_UPLIFT, ORIGIN_NEUTRAL, group.head(0)
         low, high = bootstrap_band(band_rows, configuration, rng)
         clipped = float(np.clip(chosen, MIN_UPLIFT, configuration.uplift_cap))
-        rows.append(dict(uplift_cell_id=cell_id, uplift_cell_key=hash_key(cell_id), mandatory_cell_id=mandatory_id,
+        rows.append(dict(uplift_cell_id=cell_id, uplift_cell_key=hash_key(cell_id), celda_id=mandatory_id,
                          uplift_parent_id=parent_id, n_renovadores=n, meses=int(group[configuration.period_col].nunique()),
                          uplift_propio=round(own, 4) if np.isfinite(own) else np.nan,
                          uplift_padre=round(parent, 4) if np.isfinite(parent) else np.nan,

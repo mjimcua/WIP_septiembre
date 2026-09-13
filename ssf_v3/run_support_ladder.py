@@ -52,9 +52,7 @@ LEVEL_SIGNED_UNDER_FLOOR = "S_signo_bajo_suelo"
 LEVEL_MIXED = "M_signo_mixto"
 LEVEL_NO_IMPACT = "N_sin_impacto"
 LEVEL_TIME_SERIES = "T_universo_ts"
-# Rung ≤ this counts as "borrowed from a close relative"; above it, "far"
-CLOSE_RELATIVE_MAX_RUNG = 2
-MIN_HISTORY_FOR_OWN_LEVEL = 12
+# (close_relative_max_rung and own_level_min_history_months are Config parameters)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -305,9 +303,9 @@ def risk_level(series: pd.Series, configuration: Config) -> str:
         return LEVEL_MIXED
     if series["alcanzo_suelo"] == 0:
         return LEVEL_SIGNED_UNDER_FLOOR if series["signo"] != SIGN_NEUTRAL else LEVEL_FAR
-    if series["peldano"] == 0 and series["meses_historia"] >= MIN_HISTORY_FOR_OWN_LEVEL:
+    if series["peldano"] == 0 and series["meses_historia"] >= configuration.own_level_min_history_months:
         return LEVEL_OWN
-    if series["peldano"] <= CLOSE_RELATIVE_MAX_RUNG:
+    if series["peldano"] <= configuration.close_relative_max_rung:
         return LEVEL_BORROWED
     return LEVEL_FAR
 
