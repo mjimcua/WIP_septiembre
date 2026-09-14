@@ -67,11 +67,14 @@ def monthly_series_by_estimation_id(units: pd.DataFrame, decision_support: pd.Da
     own_ids = decision_support[~decision_support["id_estimacion"].isin(membership["id_estimacion"])][["fs_id", "id_estimacion"]]
     membership = pd.concat([membership, own_ids], ignore_index=True).drop_duplicates()
     joined = history.merge(membership, on="fs_id")
+    window = configuration.technique_history_months
     series = {}
     for estimation_id, rows in joined.groupby("id_estimacion"):
         monthly = rows.groupby(configuration.period_col).agg(
             ren=(configuration.renewed_units_col, "sum"), pipe=(configuration.pipeline_units_col, "sum")).sort_index()
         monthly["rate"] = np.where(monthly["pipe"] > 0, monthly["ren"] / monthly["pipe"].replace(0, np.nan), np.nan)
+        if window is not None:
+            monthly = monthly.tail(int(window))       # what the techniques learn from; pools keep all
         series[estimation_id] = monthly
     return series
 
@@ -110,7 +113,8 @@ def volume_seasonality(monthly: pd.DataFrame) -> tuple:
     units = valid["pipe"].to_numpy(dtype=float)
     by_month = pd.Series(units, index=valid.index.month).groupby(level=0).mean()
     amplitude_pct = 100 * float((by_month.max() - by_month.min()) / max(units.mean(), 1e-9))
-    correlation = float(np.corrcoef(units, valid["rate"].to_numpy(dtype=float))[0, 1]) if units.std() > 0 else float("nan")
+    rates = valid["rate"].to_numpy(dtype=float)
+    correlation = float(np.corrcoef(units, rates)[0, 1]) if units.std() > 0 and rates.std() > 0 else float("nan")
     return amplitude_pct, correlation
 
 

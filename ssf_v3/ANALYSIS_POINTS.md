@@ -171,6 +171,14 @@ mucho dinero. Compartir: la tabla (suele ser < 50 filas).
 
 ## FASE 5 · forecast
 
+**P5.00 ★★ Las tres preguntas de negocio** — `business_summary` (consola `[5] BUSINESS ANSWERS`).
+```sql
+SELECT anio, meses_reales, meses_forecast, renovado_real_usd, forecast_usd, total_esperado_usd, banda_low_usd, banda_high_usd,
+       pipeline_real_usd, pipeline_proyectada_usd, pipeline_simulada_usd, forecast_sobre_real_usd, forecast_sobre_proyectada_usd, forecast_sobre_simulada_usd
+FROM sff_business_summary
+```
+Qué mirar: ¿cómo acaba este año? (`renovado_real` + `forecast` = `total_esperado`); ¿cuál es la pipeline del año que viene? (real = contratos que existen hoy; proyectada = reentradas de renovaciones que estamos prediciendo; simulada = adquisición al ritmo histórico); ¿cómo acaba el año que viene? (forecast sobre cada origen). Cada fila de `forecast_detail` lleva `origen_pipeline` para tirar del hilo.
+
 **P5.0 ★★ El resumen de la pipeline** — `pipeline_summary` (o consola `[5] PIPELINE SUMMARY`).
 ```sql
 SELECT bloque, meses, pipeline_usd, esperado_usd, banda_low_usd, banda_high_usd, pct_banda_high,

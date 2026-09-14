@@ -104,13 +104,17 @@ def test_extended_horizon() -> None:
         RECORDER.check((extended["simulada"] == 1).all() and extended["total_renewed_units"].isna().all(),
                        "simulated rows are flagged and carry no results")
         fine, units = results["fine"], results["units"]
-        s1_2026_04 = extended[(extended["region"] == "EU") & (extended["softcancel"] == 0) & (extended["autorenew"] == 0)
-                              & (extended["channel"] == "web") & (extended["period"] == pd.Period("2026-04", "M"))].iloc[0]
+        s1_rows = extended[(extended["region"] == "EU") & (extended["softcancel"] == 0) & (extended["autorenew"] == 0)
+                           & (extended["channel"] == "web") & (extended["period"] == pd.Period("2026-04", "M"))]
+        s1_2026_04 = s1_rows.iloc[0]
         source = fine[(fine["region"] == "EU") & (fine["softcancel"] == 0) & (fine["autorenew"] == 0) & (fine["channel"] == "web")
                       & (fine["period"] == pd.Period("2025-04", "M"))].iloc[0]
         factor = s1_2026_04["factor_adquisicion"]
-        RECORDER.check(abs(s1_2026_04["total_tr_units"] - source["total_renewed_units"] * factor) < 1e-6,
-                       "units(2026-04) = renewed(2025-04, observed) × acquisition factor")
+        RECORDER.check(abs(s1_rows["total_tr_units"].sum() - source["total_renewed_units"] * factor) < 1e-6,
+                       "units(2026-04) = renewed(2025-04, observed) × acquisition factor (summed over the two origin rows)")
+        RECORDER.check(set(s1_rows["origen_pipeline"]) == {"proyectada", "simulada"}
+                       and abs(s1_rows.loc[s1_rows["origen_pipeline"] == "proyectada", "total_tr_units"].iloc[0] - source["total_renewed_units"]) < 1e-6,
+                       "the re-entry is split: 'proyectada' = the renewals, 'simulada' = the acquisition (factor − 1)")
         RECORDER.check(abs(factor - 200 / (200 * 0.8)) < 0.15, f"the factor ≈ pipeline / renewed one term earlier ≈ 1.25 ({factor:.3f})")
         # the source (2025-04) has truth: the simulated pipeline is valued at the OBSERVED renewed AUV (20 × 1.05 = 21)
         RECORDER.check(abs(s1_2026_04["total_tr_usd"] / s1_2026_04["total_tr_units"] - 21.0) < 1e-9,
@@ -126,9 +130,9 @@ def test_extended_horizon() -> None:
         far = run_to_assembly(configuration_far, [1, 2, 3])
         far_extended = far["forecast"]["forecast_units_extended"]
         rate_s1 = far["estimates"].set_index("fs_id").loc["EU|0|0|web", "tasa_estimada"]
-        row_2027 = far_extended[(far_extended["channel"] == "web") & (far_extended["softcancel"] == 0) & (far_extended["autorenew"] == 0)
-                                & (far_extended["period"] == pd.Period("2027-01", "M"))].iloc[0]
-        RECORDER.check(abs(row_2027["total_tr_units"] - 200 * rate_s1 * row_2027["factor_adquisicion"]) < 1e-6,
+        rows_2027 = far_extended[(far_extended["channel"] == "web") & (far_extended["softcancel"] == 0) & (far_extended["autorenew"] == 0)
+                                 & (far_extended["period"] == pd.Period("2027-01", "M"))]
+        RECORDER.check(abs(rows_2027["total_tr_units"].sum() - 200 * rate_s1 * rows_2027["factor_adquisicion"].iloc[0]) < 1e-6,
                        "a month whose source is a projection month uses pipeline × tasa_estimada as expected renewals")
         RECORDER.check(len(assembly.extend_forecast_units(fine, units, results["estimates"], ladder_config(folder))) == 0,
                        "with no extended_horizon_end nothing is simulated")
@@ -151,7 +155,7 @@ def test_assembly_and_bands() -> None:
         technique_at = technique_for(results["decisions"]["decision_technique"])
         expected = [technique_at.get((i, int(h)), "T2_mean") if pd.notna(h) else "T2_mean" for i, h in zip(detail["id_estimacion"], detail["h"])]
         RECORDER.check((detail["tecnica"] == expected).all(), "every row uses the technique decided for its estimation id and its horizon band")
-        s1 = detail[detail["fs_id"] == "EU|0|0|web"].sort_values("period")
+        s1 = detail[detail["fs_id"] == "EU|0|0|web"].drop_duplicates("period").sort_values("period")
         RECORDER.check(list(s1["h"]) == list(range(1, 10)), "h counts from the last month with truth (2025-12): 2026-01 is h=1 … 2026-09 is h=9")
         RECORDER.check((s1["tasa_origen"] == "serie").all() and s1["tecnica_origen"].iloc[0] in ("campeon", "retador"),
                        "rows of a trainable series get their rate from the series' technique")

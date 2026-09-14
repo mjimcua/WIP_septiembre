@@ -134,9 +134,9 @@ def test_backtest() -> None:
         RECORDER.check("T7_seasonal_idx" in set(seasonal_id["tecnica_id"]) and "T7_seasonal_idx" not in set(long[long["id_estimacion"] == "EU|0|0|web"]["tecnica_id"]),
                        "seasonal techniques compete on the seasonal series only")
         decision = backtest["decision_technique"]
-        RECORDER.check(set(decision["tramo_h"]) == {"corto", "medio", "largo"} and (decision.groupby("id_estimacion").size() == 3).all(),
-                       "one champion per estimation id AND horizon band (corto / medio / largo)")
-        chosen = decision[decision["tramo_h"] == "corto"].set_index("id_estimacion")
+        RECORDER.check(set(decision["tramo_h"]) == {"h1", "corto", "medio", "largo"} and (decision.groupby("id_estimacion").size() == 4).all(),
+                       "one champion per estimation id AND horizon band (h1 / corto / medio / largo)")
+        chosen = decision[decision["tramo_h"] == "h1"].set_index("id_estimacion")
         RECORDER.check(chosen.loc["EU|0|0|web", "tecnica"] == "T2_mean" and chosen.loc["EU|0|0|web", "tecnica_origen"] == "retador",
                        "on a flat series nobody beats the challenger by the margin → T2_mean, origin 'retador'")
         RECORDER.check(chosen.loc["NA|0|0|web", "tecnica_origen"] == "campeon"
@@ -144,7 +144,7 @@ def test_backtest() -> None:
                        f"on the seasonal series a seasonal champion wins ({chosen.loc['NA|0|0|web', 'tecnica']})")
         RECORDER.check(chosen.loc["NA|0|0|tele", "tecnica_origen"] == "campeon", "on the trending series a champion beats the mean")
         inherited = decision[decision["tecnica_origen"].str.endswith("_heredado")]
-        RECORDER.check((inherited["tramo_h"] != "corto").all(), "a band with no screen horizon inside inherits the previous band's champion")
+        RECORDER.check((inherited["tramo_h"] != "h1").all(), "a band with no screen horizon inside inherits the previous band's champion")
         bands = backtest["decision_error_bands"]
         widths = bands.assign(w=bands["q_high_norm"] - bands["q_low_norm"]).groupby("id_estimacion")["w"]
         RECORDER.check(all((group.diff().dropna() >= -1e-9).all() for _, group in widths), "band width never narrows with h")

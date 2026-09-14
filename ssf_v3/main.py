@@ -43,9 +43,25 @@ class KamelotConfig(Config):
 
 
 if __name__ == "__main__":
-    configuration = KamelotConfig(sql_server="...", sql_database="Kamelot",
-                                  backtest_test_start="2026-01",       # the 2026 months already happened
-                                  extended_horizon_end="2027-12")      # simulate the pipeline into 2027
+    configuration = KamelotConfig(
+        sql_server="...", sql_database="Kamelot",
+        # ── horizon: the whole of 2027; the re-entries of projected renewals and the
+        #    acquisition of the projection months are simulated (labelled) up to here
+        extended_horizon_end="2027-12",
+        # ── only 1-year contracts re-enter within the horizon: 2- and 3-year ones renewed
+        #    now fall due in 2028-2029, and the ones due in 2026-2027 already exist
+        term_column="term_level_2",
+        term_months_by_value={"1 year": 12, "2 year": 24, "3 year": 36},
+        extension_row_filter={"term_level_2": ["1 year"]},
+        # ── uplift cells on the dims that move the price (10 mandatory dims made 26,090
+        #    cells, 70 % of them under the floor)
+        uplift_mandatory_dims=["regional_level_1", "product_level_1", "purchase_type", "term_level_2"],
+        uplift_parent_keep_columns=["net_new"],
+        # ── the hold-out report: the last months with truth (None = last 12)
+        backtest_test_start=None,
+        # ── experiment: let the techniques learn from the last 24 months only (pools keep all)
+        technique_history_months=None,
+    )
     if ANALYSIS_KEYWORD in sys.argv[1:]:
         run_analysis(configuration)
     else:

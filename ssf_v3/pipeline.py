@@ -155,7 +155,7 @@ def run_analysis(configuration: Config) -> dict:
     decision_dynamics, monthly_series = analysis_dynamics.run_dynamics_analysis(units, decision_support, parent_ladder, configuration)
 
     section("PHASE 3 — backtest, technique, bands", started); started = time.time()
-    forecast_horizon = forecast_horizons(fine_table, units, configuration)[-1]
+    forecast_horizon = min(forecast_horizons(fine_table, units, configuration)[-1], configuration.backtest_horizon_cap)
     judged_horizons = sorted({h for h in configuration.backtest_horizons if h <= forecast_horizon} | {forecast_horizon})
     backtest = analysis_backtest.run_backtest_analysis(monthly_series, decision_dynamics, configuration, judged_horizons)
 
@@ -165,7 +165,8 @@ def run_analysis(configuration: Config) -> dict:
     section("PHASE 5 — assembly, extended horizon, bands", started); started = time.time()
     decisions = dict(decision_eta2=dimensions["decision_eta2"], decision_support=decision_support,
                      decision_dynamics=decision_dynamics, decision_technique=backtest["decision_technique"],
-                     decision_error_bands=backtest["decision_error_bands"], decision_uplift=decision_uplift)
+                     decision_error_bands=backtest["decision_error_bands"], decision_uplift=decision_uplift,
+                     backtest_holdout_aggregate=backtest["backtest_holdout_aggregate"])
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
                                                            decisions, monthly_series, configuration, backtest["backtest_holdout"])
     report = validate(dict(

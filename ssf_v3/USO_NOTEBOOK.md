@@ -115,3 +115,31 @@ technique_error_by_horizon("<id_estimacion o fs_id o clave>", configuration)
 ```
 
 La consola de la fase 3 (`[3] candidates to look at in detail`) imprime los ids que merece la pena abrir con `sheet(...)` y con esta figura.
+
+
+## La configuración de Kamelot (copiar tal cual en el notebook)
+
+```python
+from config import Config
+import pandas as pd
+
+class SFFConfig(Config):
+    def read_raw(self):
+        return pd.read_sql(RAW_EXTRACT_QUERY, self.engine)
+
+configuration = SFFConfig(
+    sql_server="...", sql_database="Kamelot",
+    extended_horizon_end="2027-12",
+    term_column="term_level_2",
+    term_months_by_value={"1 year": 12, "2 year": 24, "3 year": 36},
+    extension_row_filter={"term_level_2": ["1 year"]},
+    uplift_mandatory_dims=["regional_level_1", "product_level_1", "purchase_type", "term_level_2"],
+    uplift_parent_keep_columns=["net_new"],
+    technique_history_months=None,       # segunda ejecución: 24, y comparar el hold-out del total
+)
+results = run_analysis(configuration)
+```
+
+Los defectos ya llevan el retador `T3_ma3`, el freno del signo (`signed_ladder_max_loss = 0.05`), el suelo de precisión (`own_rate_floor = 271`), los tramos de horizonte con tope 12 y `backtest_persist = "chosen"`. No hay que tocar nada más.
+
+Orden de revisión de atrás hacia delante: `business_summary` → `pipeline_summary` → `horizon_report_total` → `forecast_by_level` → `forecast_detail` (con `origen_pipeline`) → `sheet(<fila>)`.

@@ -140,7 +140,7 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
 
 
 def band_of_horizon(h: int, bands: dict) -> str:
-    """The horizon band (corto / medio / largo) a horizon belongs to."""
+    """The horizon band a horizon belongs to; beyond the last band's top, the last band."""
     for name, (low, high) in bands.items():
         if low <= h <= high:
             return name
@@ -206,6 +206,11 @@ def technique_for(decision_technique: pd.DataFrame) -> dict:
     lookup = {}
     for _, row in decision_technique.iterrows():
         for h in range(int(row["h_min"]), int(min(row["h_max"], 60)) + 1):
+            lookup[(row["id_estimacion"], h)] = row["tecnica"]
+    # beyond the last judged band, the last band's technique (the horizon cap)
+    last = decision_technique.sort_values("h_max").groupby("id_estimacion").tail(1)
+    for _, row in last.iterrows():
+        for h in range(int(row["h_max"]) + 1, 61):
             lookup[(row["id_estimacion"], h)] = row["tecnica"]
     return lookup
 
@@ -304,6 +309,23 @@ def print_candidates(decision_technique: pd.DataFrame, screen: pd.DataFrame, con
         print(f"   nothing beats simple  {estimation_id[:60]:<60} {configuration.challenger_technique:<20} in every band · n≈{n:.0f}")
 
 
+def holdout_aggregate(holdout: pd.DataFrame) -> pd.DataFrame:
+    """The hold-out of the TOTAL: per target month and horizon, Σ n·predicted vs Σ n·real
+    over every pool (units-weighted, ≈ money). This is the empirical error of the
+    aggregate — the number the per-pool band cannot give, because pools that miss in the
+    same direction do not cancel. OUTPUT: mes_objetivo, h, n, tasa_pred_agg, tasa_real_agg,
+    err_agg_pp (signed), and per h the mean |err_agg_pp| and the bias."""
+    if holdout is None or holdout.empty:
+        return pd.DataFrame()
+    weighted = holdout.assign(pred_n=holdout["tasa_pred"] * holdout["n_real"], real_n=holdout["tasa_real"] * holdout["n_real"])
+    monthly = weighted.groupby(["mes_objetivo", "h"], as_index=False).agg(n=("n_real", "sum"), pred_n=("pred_n", "sum"), real_n=("real_n", "sum"),
+                                                                          pools=("id_estimacion", "nunique"))
+    monthly["tasa_pred_agg"] = (monthly["pred_n"] / monthly["n"]).round(4)
+    monthly["tasa_real_agg"] = (monthly["real_n"] / monthly["n"]).round(4)
+    monthly["err_agg_pp"] = (100 * (monthly["tasa_pred_agg"] - monthly["tasa_real_agg"])).round(3)
+    return monthly.drop(columns=["pred_n", "real_n"])
+
+
 def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame, configuration: Config,
                           horizons: list) -> dict:
     """Phase 3 end to end, in two stages. Persists dim_tecnica, backtest_predictions,
@@ -329,10 +351,20 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
     backtest_long = pd.concat([screen, judged], ignore_index=True).sort_values(["id_estimacion", "mes_objetivo", "h", "tecnica_id"])
     bands = error_bands(backtest_long, decision_technique, horizons, configuration)
     holdout = holdout_report(backtest_long, decision_technique, bands, configuration)
-    configuration.write(backtest_long, "backtest_predictions")
+    if configuration.backtest_persist == "all":
+        configuration.write(backtest_long, "backtest_predictions")
+    elif configuration.backtest_persist == "chosen":
+        keep = {(row["id_estimacion"], row["tecnica"]) for _, row in decision_technique.iterrows()}
+        keep |= {(estimation_id, configuration.challenger_technique) for estimation_id in decision_technique["id_estimacion"].unique()}
+        chosen_rows = backtest_long[[(i, t) in keep for i, t in zip(backtest_long["id_estimacion"], backtest_long["tecnica_id"])]]
+        configuration.write(chosen_rows, "backtest_predictions")
+        print(f"[3] backtest_pred persisted for champions + challenger only: {len(chosen_rows):,} of {len(backtest_long):,} rows "
+              f"(backtest_persist='chosen'; the full table stays in results['backtest']['backtest_long'])")
     configuration.write(decision_technique, "decision_technique")
     configuration.write(bands, "decision_error_bands")
     configuration.write(holdout, "backtest_holdout")
+    aggregate = holdout_aggregate(holdout)
+    configuration.write(aggregate, "backtest_holdout_aggregate")
     if len(screen):
         bands_map = configuration.backtest_horizon_bands
         scored = screen.assign(tramo_h=screen["h"].map(lambda h: band_of_horizon(int(h), bands_map)), abs_norm=screen["err_norm"].abs())
@@ -358,5 +390,11 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
         for h, row in by_h.iterrows():
             print(f"   h={int(h):>2}: |error| {row['err_pp']:.2f} pp · weighted {row['err_pp_w']:.2f} pp · bias {row['bias_w']:+.2f} pp · "
                   f"{row['dentro']:.0%} inside band · {int(row['n'])} predictions")
+        if len(aggregate):
+            by_h_agg = aggregate.groupby("h").agg(err=("err_agg_pp", lambda e: float(e.abs().mean())), bias=("err_agg_pp", "mean"),
+                                                  worst=("err_agg_pp", lambda e: float(e.abs().max())), meses=("mes_objetivo", "nunique"))
+            print("[3] HOLD-OUT OF THE TOTAL (all pools summed, units-weighted): the error of the aggregate month, which per-pool bands cannot give")
+            for h, row in by_h_agg.iterrows():
+                print(f"   h={int(h):>2}: |error of the total| {row['err']:.2f} pp · bias {row['bias']:+.2f} pp · worst month {row['worst']:.2f} pp · {int(row['meses'])} months")
     return dict(backtest_long=backtest_long, decision_technique=decision_technique, decision_error_bands=bands,
-                backtest_holdout=holdout)
+                backtest_holdout=holdout, backtest_holdout_aggregate=aggregate)

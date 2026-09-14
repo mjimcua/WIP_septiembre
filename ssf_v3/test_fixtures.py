@@ -93,7 +93,9 @@ def ladder_config(temporary_directory: str, **overrides) -> Config:
     engine = create_engine(f"sqlite:///{os.path.join(temporary_directory, 'test.db')}")
     arguments = dict(LADDER_TAXONOMY)
     arguments.update(dict(sql_engine=engine, sql_schema=None, outdir=temporary_directory, backtest_test_start="2025-07",
-                          own_rate_floor=30.0))       # the six-series ladder was designed with one floor
+                          own_rate_floor=30.0,         # the six-series ladder was designed with one floor
+                          signed_ladder_max_loss=0.0,  # and with the strict sign rule
+                          challenger_technique="T2_mean"))   # and the mean as challenger
     arguments.update(overrides)
     return LadderConfig(**arguments)
 

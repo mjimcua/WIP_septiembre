@@ -276,14 +276,6 @@ def counterfactual_and_decomposition(units: pd.DataFrame, configuration: Config)
     return counterfactual.reset_index(drop=True), decomposition
 
 
-def mix_risk_by_cell(decomposition: pd.DataFrame) -> pd.Series:
-    """Per cell: the mean absolute composition term over the window — how much the cell's
-    aggregate rate moves by composition alone. The `riesgo_mix_pp` attribute of the card."""
-    if decomposition.empty:
-        return pd.Series(dtype=float, name="riesgo_mix_pp")
-    return decomposition.groupby("celda_id")["delta_composicion_pp"].apply(lambda s: float(np.mean(np.abs(s)))).rename("riesgo_mix_pp")
-
-
 # ═══════════════════════════════════════════════════════════════════════════════════
 # 3 · TIMEVARYING CALIBRATION
 # ═══════════════════════════════════════════════════════════════════════════════════

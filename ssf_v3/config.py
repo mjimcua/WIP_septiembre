@@ -111,6 +111,7 @@ PHYSICAL_TABLE_NAMES = {
     "dim_tecnica": "dim_tecnica",
     "backtest_predictions": "backtest_pred",
     "backtest_holdout": "backtest_holdout",
+    "backtest_holdout_aggregate": "backtest_holdout_agg",
     "decision_technique": "decision_technique",
     "decision_error_bands": "decision_error_bands",
     # ── phase 4 · uplift
@@ -124,6 +125,7 @@ PHYSICAL_TABLE_NAMES = {
     "horizon_report_total": "horizon_report_total",
     "forecast_by_level": "forecast_by_level",
     "pipeline_summary": "pipeline_summary",
+    "business_summary": "business_summary",
     "validation_report": "validation_report",
 }
 
@@ -340,11 +342,12 @@ class Config:
     own_level_min_history_months: int = 12
     # How far a series WITH SIGN may climb beyond its mandatory cell × sign, keeping the
     # sign: it may collapse mandatory dims in the sequential order while the CUMULATIVE R²
-    # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the default rule (the
-    # ladder of a signed series ends at the cell × sign). 0.05 lets it collapse the dims
-    # that separate almost nothing (in Kamelot: band_2, band_1, product_2, product_1),
-    # i.e. cohorts nearly identical — pooled signal, not Simpson. Watch S_signo_bajo_suelo.
-    signed_ladder_max_loss: float = 0.0
+    # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the strict rule (the
+    # ladder of a signed series ends at the cell × sign). 0.05 (default) lets it collapse
+    # the dims that separate almost nothing (in Kamelot: band_2, band_1, product_2,
+    # product_1), i.e. cohorts nearly identical — pooled signal, not Simpson. With 10
+    # mandatory dims the strict rule left 4,237 signed series ($8.3M) without a pool.
+    signed_ladder_max_loss: float = 0.05
 
     # ─── phase 2 · dynamics (ANALYSIS) ─────────────────────────────────────────────
     # Months of history before seasonality or trend are even measured (13 = one full
@@ -389,21 +392,40 @@ class Config:
     # Two-stage judge: every eligible technique is screened at these horizons to choose
     # the champion; then only champion + challenger are judged at every horizon. {1,3,6}
     # covers the operational month, the quarter and the half-year with ~3× less cost.
-    backtest_screen_horizons: list = field(default_factory=lambda: [1, 3, 6, 12])
+    backtest_screen_horizons: list = field(default_factory=lambda: [1, 2, 3, 6, 12])
     # Horizon bands: ONE champion per band, not one per pool. A 3-month average wins the
     # near months and knows nothing about January twelve months out; a seasonal or mixed
     # technique may lose at h=1 and win at h=12. Each band is judged with the screen
     # horizons that fall inside it (so every band needs at least one screen horizon).
-    backtest_horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 3], "medio": [4, 6], "largo": [7, 999]})
+    # h=1 is a band of its own: the current month is the forecast the business trusts
+    # first, so its technique is chosen on its own evidence. Beyond `backtest_horizon_cap`
+    # nothing is judged: a month 16 ahead is predicted as if 12 ahead (same technique,
+    # same band). The error there is large and declared, not measured.
+    backtest_horizon_bands: dict = field(default_factory=lambda: {"h1": [1, 1], "corto": [2, 3], "medio": [4, 6], "largo": [7, 12]})
+    backtest_horizon_cap: int = 12
+    # Months of history the TECHNIQUES see (dynamics, backtest, forecast): None = all.
+    # The ladder and the pools always use the whole history (support is support); this
+    # only cuts what the techniques learn from. In a portfolio where "everything changed"
+    # (products replaced, flags born in 2023, regimes), 24 keeps two cycles of the world
+    # that still exists. Try 24 and compare the hold-out of the total.
+    technique_history_months: Optional[int] = None
+    # What to persist of the long backtest table (`backtest_pred`): "chosen" = only the
+    # rows of each band's champion and the challenger (~25 % of the rows: enough to audit
+    # the decision and the hold-out); "all" = every technique (the full error-by-horizon
+    # figure from SQL; in Kamelot 2M rows, ~3 minutes of writing); "none". The full table
+    # stays in memory (results["backtest"]["backtest_long"]) during the session either way.
+    backtest_persist: str = "chosen"
     # Parallel workers for the backtest (1 = sequential; identical result). Useful with
     # thousands of estimation ids on a multi-core machine; harmless otherwise.
     backtest_workers: int = 1
     # Minimum predictions a technique needs to dethrone the challenger: 6 = at least half
     # a year of verdicts at the screen horizons.
     backtest_min_predictions: int = 6
-    # The challenger: the technique a champion must beat. The mean of the whole history
-    # is the natural one — it is the best forecast wherever φ ≈ 1.
-    challenger_technique: str = "T2_mean"
+    # The challenger: the technique a champion must beat. The 3-month average ("what
+    # happened last quarter"): in Kamelot it beat the whole-history mean in every horizon
+    # band (2.1 vs 3.6 binomial units near, 4.5 vs 4.7 far) because the rate moves by
+    # level changes, not by season. A champion has to beat THAT to be a champion.
+    challenger_technique: str = "T3_ma3"
     # Margin, in units of the binomial error, by which a champion must beat the
     # challenger (and within which techniques tie → the richer family wins). 0.10 = a
     # tenth of a sampling error: enough to ignore luck, small enough to let real signal

@@ -87,16 +87,16 @@ retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_al
 | `synthetic_v3.py` | test | dataset sintético con un escenario por feature |
 | `checks.py`, `test_fixtures.py`, `test_*.py`, `run_all_tests.py` | test | 310 checks de lógica |
 
-## Tablas (37, prefijo `sff_`)
+## Tablas (39, prefijo `sff_`)
 
 Fase 0: `fact_fu`, `fact_fine`, `fact_fu_gaps`, `lookup_fu`, `lookup_comb`, `fu_summary`, `raw_profile`, `dim_domains`, `fu_profile`, `dial_buckets`.
 Fase 1: `fs_summary`, `series_card`, `risk_levels`, `parent_ladder`, `support_chain`,
 `decision_support`, `decision_eta2`, `decision_eta2_pairs`, `simpson_contrafactual`,
 `mix_shift`, `tv_calibration`. Fase 2: `decision_dynamics`. Fase 3: `dim_tecnica`,
-`backtest_pred`, `backtest_holdout`, `decision_technique`, `decision_error_bands`.
+`backtest_pred`, `backtest_holdout`, `backtest_holdout_agg`, `decision_technique`, `decision_error_bands`.
 Fase 4: `uplift_chain`, `decision_uplift`. Fase 5: `key_bridge`, `fu_extended`,
 `forecast_detail`, `forecast_bands`, `horizon_report_total`, `forecast_by_level`,
-`pipeline_summary`, `validation_report`.
+`pipeline_summary`, `business_summary`, `validation_report`.
 
 Ids y claves: `fu_id`/`fu_key` (unidad), `comb_id`/`comb_key` (combinación de extras de
 revalorización), `fu_comb_key` (fila del raw), `fs_id`/`fs_key` (serie), `id_estimacion`/

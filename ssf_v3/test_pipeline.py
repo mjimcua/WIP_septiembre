@@ -46,7 +46,8 @@ def synthetic_config(folder: str, mandatory: list, extras: list) -> Config:
     return SyntheticConfig(sql_engine=engine, sql_schema=None, outdir=folder, business_mandatory_dims=mandatory,
                            structural_timevarying_dims=TIMEVARYING, extra_renovacion=extras,
                            extra_revalorizacion=["discount", "newcust"], backtest_test_start="2026-01",
-                           extended_horizon_end="2027-12", uplift_parent_keep_columns=["newcust"])
+                           extended_horizon_end="2027-12", uplift_parent_keep_columns=["newcust"],
+                           signed_ladder_max_loss=0.0, challenger_technique="T2_mean")
 
 
 def test_analysis_taxonomy_1() -> dict:
@@ -77,7 +78,7 @@ def test_analysis_taxonomy_1() -> dict:
     RECORDER.check(dynamics.loc["EU|0|0|0|0|A|web", "gate"] == "estacional" and dynamics.loc["EU|0|0|0|0|A|web", "phi"] > 3,
                    "EU|A is seasonal with an engine (φ > 3)")
     technique = results["decisions"]["decision_technique"]
-    technique = technique[technique["tramo_h"] == "corto"].set_index("id_estimacion")
+    technique = technique[technique["tramo_h"] == "h1"].set_index("id_estimacion")
     RECORDER.check(technique.loc["EU|0|0|0|0|A|web", "tecnica_origen"] == "campeon" and technique.loc["NA|0|0|0|0|A|web", "tecnica"] == "T2_mean",
                    "a champion on the seasonal series; the challenger on a flat one")
     decomposition = results["dimensions"]["mix_shift_decomposition"]

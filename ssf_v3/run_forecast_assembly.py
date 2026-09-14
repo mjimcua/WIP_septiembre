@@ -40,6 +40,11 @@ from techniques import month_numbers_of, predict
 # ─── named constants ─────────────────────────────────────────────────────────────
 PROJECTION_ROLE = "projection"
 ORIGIN_SERIES, ORIGIN_CELL, ORIGIN_GLOBAL = "serie", "celda", "global"
+# origin of every pipeline row of the forecast (persisted as `origen_pipeline`):
+#   real       the contract exists today (the known pipeline of the extract)
+#   proyectada it will exist if a renewal we are FORECASTING happens (re-entry term months later)
+#   simulada   it will exist if the acquisition of a future month happens at the historical pace
+PIPELINE_REAL, PIPELINE_PROJECTED, PIPELINE_SIMULATED = "real", "proyectada", "simulada"
 TECH_DEFAULT = "default"
 DEFAULT_TECHNIQUE = "T2_mean"
 # (acquisition_min_pairs and band_narrowing_tolerance_pct are Config parameters)
@@ -96,7 +101,7 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
              gives the expected renewals of months not yet observed) · configuration.
     OUTPUT:  rows with the fine table's columns + simulada = 1, factor_adquisicion; empty
              when no extension is configured.
-    RULES:   for month m beyond the known pipeline, per series and combination:
+    RULES:   for month m = (projection month + term) up to the end, per series and combination:
              units(m) = renewed(m − term) × factor, with the term of EACH ROW (term_column /
              term_months_by_value, else renewal_term_months); renewed(m − term) is observed
              when m − term has truth, or expected (pipeline × tasa_estimada) when it is a
@@ -113,10 +118,13 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     if configuration.extended_horizon_end is None:
         return pd.DataFrame()
     period, role = configuration.period_col, configuration.dataset_role_col
+    if "_due" in fine_table.columns:
+        fine_table = fine_table.drop(columns=["_due"])
     pipe_units, pipe_usd = configuration.pipeline_units_col, configuration.pipeline_usd_col
     last_known = fine_table[period].max()
     end = pd.Period(configuration.extended_horizon_end, freq="M")
-    if end <= last_known:
+    first_projection = fine_table.loc[fine_table[role] == PROJECTION_ROLE, period].min()
+    if pd.isna(first_projection):
         return pd.DataFrame()
     factors, global_factor = acquisition_factor_by_series(units, configuration)
     rate_by_series = series_estimates.set_index("fs_id")["tasa_estimada"]
@@ -134,8 +142,16 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     if decision_uplift is not None and len(decision_uplift):
         uplift_of_cell = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift"]))
     known["_uplift_cell_id"] = join_columns(known, configuration.uplift_cell_columns)
+    # Which renewals re-enter: (a) those of PROJECTION months — the contract does not exist
+    # yet, so its re-entry (term months later) is missing from the pipeline even when the
+    # extract reaches that far (the hollow last months of the horizon); (b) those of months
+    # with truth whose re-entry falls BEYOND the known pipeline. A renewal with truth whose
+    # re-entry is inside the known pipeline is already there: it must not be added twice.
+    observed_inside_pipeline = (known[role] != PROJECTION_ROLE) & (known["_due"] <= last_known)
+    known.loc[observed_inside_pipeline, "_due"] = pd.NaT
     all_rows, simulated_frames = known, []
-    for month in pd.period_range(last_known + 1, end, freq="M"):
+    first_simulated = min(first_projection + int(known["_term"].min()), last_known + 1)
+    for month in pd.period_range(first_simulated, end, freq="M"):
         source = all_rows[all_rows["_due"] == month]
         if source.empty:
             continue
@@ -153,28 +169,35 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         cell_uplift = source["_uplift_cell_id"].map(uplift_of_cell).fillna(1.0).to_numpy(dtype=float)
         # the renewed price: observed where there is truth, pipeline AUV × uplift where there is not
         auv = np.where(np.isfinite(observed_auv) & ~use_expected[keep].to_numpy(), observed_auv, pipeline_auv * cell_uplift)
-        new_rows = source.copy()
-        new_rows[period], new_rows[role] = month, PROJECTION_ROLE
-        new_rows[pipe_units] = renewed * factor
-        new_rows[pipe_usd] = renewed * factor * auv
-        for column in (configuration.renewed_units_col, configuration.renewed_usd_col):
-            new_rows[column] = np.nan
-        new_rows[configuration.current_month_col] = 0
-        new_rows["simulada"], new_rows["factor_adquisicion"] = 1, np.round(factor, 4)
-        new_rows["_due"] = new_rows[period] + new_rows["_term"]
-        new_rows["fu_id"] = new_rows["fs_id"] + "|" + str(month)
-        new_rows["fu_key"] = new_rows["fu_id"].map(hash_key)
-        new_rows["fu_comb_key"] = (new_rows["fu_id"] + "||" + new_rows["comb_id"].astype(str)).map(hash_key)
-        simulated_frames.append(new_rows)
-        all_rows = pd.concat([all_rows, new_rows], ignore_index=True)
+        # TWO rows per source: the re-entry of the (projected) renewals, and the acquisition
+        # that will fall due with them (factor − 1). Each carries its origin label.
+        for origin_label, units_of_origin in ((PIPELINE_PROJECTED, renewed), (PIPELINE_SIMULATED, renewed * np.maximum(factor - 1.0, 0.0))):
+            keep_origin = units_of_origin > 0
+            if not keep_origin.any():
+                continue
+            new_rows = source[keep_origin].copy()
+            new_rows[period], new_rows[role] = month, PROJECTION_ROLE
+            new_rows[pipe_units] = units_of_origin[keep_origin]
+            new_rows[pipe_usd] = units_of_origin[keep_origin] * auv[keep_origin]
+            for column in (configuration.renewed_units_col, configuration.renewed_usd_col):
+                new_rows[column] = np.nan
+            new_rows[configuration.current_month_col] = 0
+            new_rows["simulada"], new_rows["factor_adquisicion"] = 1, np.round(factor[keep_origin], 4)
+            new_rows["origen_pipeline"] = origin_label
+            new_rows["_due"] = new_rows[period] + new_rows["_term"]
+            new_rows["fu_id"] = new_rows["fs_id"] + "|" + str(month)
+            new_rows["fu_key"] = new_rows["fu_id"].map(hash_key)
+            new_rows["fu_comb_key"] = (new_rows["fu_id"] + "||" + new_rows["comb_id"].astype(str) + "||" + origin_label).map(hash_key)
+            simulated_frames.append(new_rows)
+            all_rows = pd.concat([all_rows, new_rows], ignore_index=True)
     if not simulated_frames:
         return pd.DataFrame()
     extended = pd.concat(simulated_frames, ignore_index=True)
     terms_used = sorted(extended["_term"].unique())
     extended = extended.drop(columns=["_term", "_due", "_uplift_cell_id"])
-    print(f"[5] extended horizon {last_known + 1} → {end}: {len(extended):,} simulated rows · "
+    print(f"[5] extended horizon: re-entries of projection-month renewals up to {end} ({len(extended):,} simulated rows; known pipeline ends {last_known}) · "
           f"acquisition factor global {global_factor:.3f} (per-series for {len(factors)} series) · "
-          f"re-entry after {terms_used} months" + (f" (from '{configuration.term_column}')" if configuration.term_column else "")
+          f"re-entry after {[int(t) for t in terms_used]} months" + (f" (from '{configuration.term_column}')" if configuration.term_column else "")
           + (f" · only rows with {configuration.extension_row_filter}" if configuration.extension_row_filter else "")
           + " · valued at the renewed price (AUV × uplift)")
     return extended
@@ -242,6 +265,9 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
     if "simulada" not in rows.columns:
         rows["simulada"] = 0
     rows["simulada"] = rows["simulada"].fillna(0).astype(int)
+    if "origen_pipeline" not in rows.columns:
+        rows["origen_pipeline"] = PIPELINE_REAL
+    rows["origen_pipeline"] = rows["origen_pipeline"].fillna(PIPELINE_REAL)
     estimation_of = decision_support[["fs_id", "id_estimacion"]].drop_duplicates("fs_id")
     rows = rows.merge(estimation_of, on="fs_id", how="left")
     rows["id_estimacion"] = rows["id_estimacion"].fillna(rows["fs_id"])
@@ -374,6 +400,9 @@ def horizon_report(bands: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     monthly["pct_simulado"] = bands.groupby(period).apply(
         lambda g: 100 * g.loc[g["simulada"] == 1, "esperado_usd"].sum() / max(g["esperado_usd"].sum(), 1e-9),
         include_groups=False).reindex(monthly[period]).round(1).values
+    for label in (PIPELINE_REAL, PIPELINE_PROJECTED, PIPELINE_SIMULATED):
+        monthly[f"pipeline_{label}_usd"] = bands.groupby(period)[configuration.pipeline_usd_col].apply(
+            lambda g: float(g[bands.loc[g.index, "origen_pipeline"] == label].sum())).reindex(monthly[period]).round(2).values
     monthly["pct_tasa_serie"] = bands.groupby(period).apply(
         lambda g: 100 * g.loc[g["tasa_origen"] == ORIGIN_SERIES, "esperado_usd"].sum() / max(g["esperado_usd"].sum(), 1e-9),
         include_groups=False).reindex(monthly[period]).round(1).values
@@ -391,6 +420,7 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     period = configuration.period_col
     known_future = fine_table[fine_table[configuration.dataset_role_col] == PROJECTION_ROLE].copy()
     known_future["simulada"] = 0
+    known_future["origen_pipeline"] = PIPELINE_REAL
     extended = extend_forecast_units(fine_table, units, series_estimates, configuration, decisions["decision_uplift"])
     if len(extended):
         configuration.write(extended.assign(**{period: extended[period].astype(str)}), "forecast_units_extended")
@@ -407,7 +437,7 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     detail_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", "uplift_cell_id", "celda_id",
                       period, configuration.pipeline_units_col, configuration.pipeline_usd_col, "h", "tecnica", "tecnica_origen",
                       "tasa_pool_h", "desviacion_propia_pp", "tasa", "tasa_origen", "uplift", "uplift_origen", "esperado_usd",
-                      "simulada", "nivel_riesgo"]
+                      "simulada", "origen_pipeline", "nivel_riesgo"]
     band_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", period, "h", "banda_low_pp", "banda_high_pp",
                     "banda_low_usd", "banda_high_usd", "banda_origen", "esperado_usd"]
     configuration.write(bands[detail_columns].assign(**{period: bands[period].astype(str)}), "forecast_detail")
@@ -416,7 +446,8 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     configuration.write(horizon, "horizon_report_total")
     by_level = aggregate_with_bands(bands, ["nivel_riesgo"], configuration)
     configuration.write(by_level, "forecast_by_level")
-    summary = pipeline_summary(bands, backtest_holdout, configuration)
+    summary = pipeline_summary(bands, backtest_holdout, configuration,
+                               (decisions or {}).get("backtest_holdout_aggregate"))
     configuration.write(summary, "pipeline_summary")
     print(f"[5] forecast: ${bands['esperado_usd'].sum():,.0f} over {bands[period].nunique()} months · rate origin "
           f"{bands.groupby('tasa_origen')['esperado_usd'].sum().div(bands['esperado_usd'].sum()).mul(100).round(1).to_dict()} · "
@@ -426,15 +457,19 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         print(f"   {row[period]}  ${row['esperado_usd']:>11,.0f}  {row['pct_low']:+6.1f}% / {row['pct_high']:+5.1f}%  "
               f"simulated {row['pct_simulado']:5.1f}%  {'' if row['banda_monotona'] else 'band narrowed beyond tolerance'}")
     print_pipeline_summary(summary)
+    answers = business_summary(bands, fine_table, configuration)
+    configuration.write(answers, "business_summary")
+    print_business_summary(answers)
     return dict(forecast_detail=bands[detail_columns], forecast_bands=bands[band_columns], horizon_report=horizon,
-                forecast_by_level=by_level, forecast_units_extended=extended, pipeline_summary=summary)
+                forecast_by_level=by_level, forecast_units_extended=extended, pipeline_summary=summary, business_summary=answers)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
 # THE PIPELINE SUMMARY · what we predict, how well, and the best and worst it can get
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: Config,
+                     holdout_aggregate: pd.DataFrame = None) -> pd.DataFrame:
     """One table that answers "how good is this pipeline": per block of months and in total,
     the money to predict, the expected money, THREE margins and the realized error.
 
@@ -457,6 +492,10 @@ def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: 
       pct_nivel_A         share of money at levels A/A2/A3 (own precision or reinforced)
       error_realizado_pct realized hold-out error at h ≤ 4, weighted by units, as % of
                           the rate (≈ % of money): what actually happened when we predicted
+      error_total_realizado_pct  the same but of the TOTAL: all pools summed per month and
+                          compared with the real total; the honest check of the calibrated
+                          band (pools that miss together do not cancel). error_total_peor_mes_pct
+                          is the worst month.
     Improvements show as banda_* moving toward cota_min; cota_min only moves with more
     customers per unit (segmenting less, or a bigger portfolio).
     """
@@ -469,10 +508,14 @@ def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: 
     se_row = np.sqrt(np.maximum(frame["tasa"] * (1 - frame["tasa"]), MIN_PROPORTION_VARIANCE) / units)
     frame["cota_fila_usd"] = configuration.z * se_row * frame[configuration.pipeline_usd_col] * frame["uplift"]
     frame["nivel_A"] = frame["nivel_riesgo"].astype(str).str.startswith("A")
-    realized = np.nan
+    realized, realized_total, realized_total_worst = np.nan, np.nan, np.nan
     if holdout is not None and len(holdout):
         near = holdout[holdout["h"] <= 4]
         realized = float(np.average(near["err_pp"].abs(), weights=near["n_real"])) if len(near) else np.nan
+    if holdout_aggregate is not None and len(holdout_aggregate):
+        near_total = holdout_aggregate[holdout_aggregate["h"] <= 4]
+        realized_total = float(near_total["err_agg_pp"].abs().mean()) if len(near_total) else np.nan
+        realized_total_worst = float(near_total["err_agg_pp"].abs().max()) if len(near_total) else np.nan
     rows = []
     for block, group in list(frame.groupby("bloque")) + [("total", frame)]:
         shared = group.groupby(["id_estimacion", period]).agg(low=("banda_low_usd", "sum"), high=("banda_high_usd", "sum"))
@@ -484,7 +527,9 @@ def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: 
             cota_min_usd=round(float(np.sqrt((group["cota_fila_usd"] ** 2).sum())), 2), cota_max_usd=round(float(group["cota_fila_usd"].sum()), 2),
             pct_simulado=round(100 * float(group.loc[group["simulada"] == 1, "esperado_usd"].sum()) / max(expected, 1e-9), 1),
             pct_nivel_A=round(100 * float(group.loc[group["nivel_A"], "esperado_usd"].sum()) / max(expected, 1e-9), 1),
-            error_realizado_pct=round(realized, 2) if np.isfinite(realized) else np.nan))
+            error_realizado_pct=round(realized, 2) if np.isfinite(realized) else np.nan,
+            error_total_realizado_pct=round(realized_total, 2) if np.isfinite(realized_total) else np.nan,
+            error_total_peor_mes_pct=round(realized_total_worst, 2) if np.isfinite(realized_total_worst) else np.nan))
     summary = pd.DataFrame(rows)
     for column in ("banda_low_usd", "banda_high_usd", "cota_min_usd", "cota_max_usd"):
         summary["pct_" + column.replace("_usd", "")] = (100 * summary[column] / summary["esperado_usd"].replace(0, np.nan)).round(2)
@@ -494,9 +539,69 @@ def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: 
 
 def print_pipeline_summary(summary: pd.DataFrame) -> None:
     print("[5] PIPELINE SUMMARY · what we predict, the band we promise, the floor nobody beats, the absolute worst case")
-    print("   block         months  pipeline $      expected $    band (calibrated)          floor (binomial, quadrature)  worst case (linear)  simulated  level A  realized |err| h<=4")
+    print("   block         months  pipeline $      expected $    band (calibrated)          floor (binomial, quadrature)  worst case (linear)  simulated  level A  realized |err| h<=4 (per pool · TOTAL · worst month)")
     for _, row in summary.iterrows():
         print(f"   {row['bloque']:<13} {int(row['meses']):>4}  ${row['pipeline_usd']:>13,.0f}  ${row['esperado_usd']:>13,.0f}  "
               f"{row['pct_banda_low']:+6.1f}% / {row['pct_banda_high']:+5.1f}% (${row['banda_high_usd']:,.0f})  "
               f"±{row['pct_cota_min']:.1f}% (${row['cota_min_usd']:,.0f})       ±{row['pct_cota_max']:.1f}% (${row['cota_max_usd']:,.0f})   "
-              f"{row['pct_simulado']:5.1f}%   {row['pct_nivel_A']:5.1f}%   {row['error_realizado_pct'] if pd.notna(row['error_realizado_pct']) else float('nan'):.2f} pp")
+              f"{row['pct_simulado']:5.1f}%   {row['pct_nivel_A']:5.1f}%   {row['error_realizado_pct'] if pd.notna(row['error_realizado_pct']) else float('nan'):.2f} pp · "
+              f"{row['error_total_realizado_pct'] if pd.notna(row['error_total_realizado_pct']) else float('nan'):.2f} pp · {row['error_total_peor_mes_pct'] if pd.notna(row['error_total_peor_mes_pct']) else float('nan'):.2f} pp")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# THE BUSINESS ANSWERS · how does this year end · what is next year's pipeline · how does it end
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+def business_summary(bands: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """One table, one row per year, answering the three questions the business asks:
+      1. How does this year end?  renovado_real (months with truth) + forecast of the rest.
+      2. What is next year's pipeline?  pipeline_real + pipeline_proyectada + pipeline_simulada.
+      3. How does next year end?  the forecast on that pipeline, with its band.
+    Columns: anio, meses_reales, meses_forecast, pipeline_real_usd, pipeline_proyectada_usd,
+    pipeline_simulada_usd, pipeline_total_usd, renovado_real_usd, forecast_usd,
+    forecast_sobre_real_usd, forecast_sobre_proyectada_usd, forecast_sobre_simulada_usd,
+    total_esperado_usd (= renovado_real + forecast), banda_low_usd, banda_high_usd.
+    """
+    period, role = configuration.period_col, configuration.dataset_role_col
+    truth = fine_table[fine_table[role] != PROJECTION_ROLE]
+    truth_year = pd.PeriodIndex(truth[period].astype(str), freq="M").year
+    realized = truth.groupby(truth_year).agg(renovado_real_usd=(configuration.renewed_usd_col, "sum"),
+                                              pipeline_vencida_usd=(configuration.pipeline_usd_col, "sum"), meses_reales=(period, "nunique"))
+    future = bands.assign(anio=pd.PeriodIndex(bands[period].astype(str), freq="M").year)
+    by_origin = future.pivot_table(index="anio", columns="origen_pipeline", values=configuration.pipeline_usd_col, aggfunc="sum").fillna(0.0)
+    expected_by_origin = future.pivot_table(index="anio", columns="origen_pipeline", values="esperado_usd", aggfunc="sum").fillna(0.0)
+    years = sorted(set(by_origin.index) | {int(y) for y in realized.index if y >= min(by_origin.index)}) if len(by_origin) else sorted(realized.index)
+    rows = []
+    for year in years:
+        year_rows = future[future["anio"] == year]
+        shared = year_rows.groupby(["id_estimacion", period]).agg(low=("banda_low_usd", "sum"), high=("banda_high_usd", "sum"))
+        forecast = float(year_rows["esperado_usd"].sum())
+        real_money = float(realized["renovado_real_usd"].get(year, 0.0)) if year in realized.index else 0.0
+        rows.append(dict(
+            anio=int(year),
+            meses_reales=int(realized["meses_reales"].get(year, 0)) if year in realized.index else 0,
+            meses_forecast=int(year_rows[period].nunique()),
+            pipeline_real_usd=round(float(by_origin.get(PIPELINE_REAL, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            pipeline_proyectada_usd=round(float(by_origin.get(PIPELINE_PROJECTED, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            pipeline_simulada_usd=round(float(by_origin.get(PIPELINE_SIMULATED, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            pipeline_total_usd=round(float(year_rows[configuration.pipeline_usd_col].sum()), 2),
+            renovado_real_usd=round(real_money, 2),
+            forecast_usd=round(forecast, 2),
+            forecast_sobre_real_usd=round(float(expected_by_origin.get(PIPELINE_REAL, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            forecast_sobre_proyectada_usd=round(float(expected_by_origin.get(PIPELINE_PROJECTED, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            forecast_sobre_simulada_usd=round(float(expected_by_origin.get(PIPELINE_SIMULATED, pd.Series(dtype=float)).get(year, 0.0)), 2),
+            total_esperado_usd=round(real_money + forecast, 2),
+            banda_low_usd=round(-float(np.sqrt((shared["low"] ** 2).sum())), 2) if len(shared) else 0.0,
+            banda_high_usd=round(float(np.sqrt((shared["high"] ** 2).sum())), 2) if len(shared) else 0.0))
+    return pd.DataFrame(rows)
+
+
+def print_business_summary(summary: pd.DataFrame) -> None:
+    print("[5] BUSINESS ANSWERS · per year: what is already real, what we forecast, and on which pipeline")
+    for _, row in summary.iterrows():
+        print(f"   {int(row['anio'])}  renewed so far ${row['renovado_real_usd']:>13,.0f} ({int(row['meses_reales'])} months)  "
+              f"+ forecast ${row['forecast_usd']:>13,.0f} ({int(row['meses_forecast'])} months)  = ${row['total_esperado_usd']:>13,.0f}  "
+              f"band {row['banda_low_usd']:+,.0f} / {row['banda_high_usd']:+,.0f}")
+        print(f"         pipeline to renew: real ${row['pipeline_real_usd']:,.0f} · projected (our own forecast re-entering) ${row['pipeline_proyectada_usd']:,.0f} · "
+              f"simulated (acquisition at the historical pace) ${row['pipeline_simulada_usd']:,.0f} → forecast on each: "
+              f"${row['forecast_sobre_real_usd']:,.0f} / ${row['forecast_sobre_proyectada_usd']:,.0f} / ${row['forecast_sobre_simulada_usd']:,.0f}")
