@@ -25,22 +25,26 @@ import time
 
 import pandas as pd
 
+# The project is a flat folder imported from notebooks and scripts alike: make sure the
+# folder of this file is importable BEFORE importing the sibling modules below (that is
+# why those imports come after this block, not at the top).
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
-import analysis_backtest                  # noqa: E402
-import analysis_data_profile              # noqa: E402
-import analysis_dimensions                # noqa: E402
-import analysis_dynamics                  # noqa: E402
-import raw_data_validation                # noqa: E402
-import run_forecast_assembly              # noqa: E402
-import run_rate_series                    # noqa: E402
-import run_support_ladder                 # noqa: E402
-import run_uplift                         # noqa: E402
-import run_validation                     # noqa: E402
-import support_reference                  # noqa: E402
-from config import Config, hash_key, join_columns   # noqa: E402
+import analysis_backtest
+import analysis_baseline
+import analysis_data_profile
+import analysis_dimensions
+import analysis_seasonality_benchmark
+import raw_data_validation
+import run_forecast_assembly
+import run_rate_series
+import run_support_ladder
+import run_uplift
+import run_validation
+import support_reference
+from config import Config, hash_key, join_columns
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 SECTION_RULE = "═" * 74
@@ -49,8 +53,8 @@ SECTION_RULE = "═" * 74
 def section(title: str, started_at: float) -> None:
     """Print the section header with the seconds the previous section took."""
     print(SECTION_RULE, f"\n{title}   (previous section {time.time() - started_at:.1f} s)")
-DECISION_TABLES = ("decision_eta2", "decision_support", "decision_dynamics", "decision_technique",
-                   "decision_error_bands", "decision_uplift")
+DECISION_TABLES = ("decision_eta2", "decision_support", "decision_estacionalidad", "pool_reference", "decision_technique",
+                   "decision_error_bands", "decision_uplift", "decision_aggregate_bands")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -58,7 +62,7 @@ DECISION_TABLES = ("decision_eta2", "decision_support", "decision_dynamics", "de
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 REQUIRED_CONFIG_FIELDS = ("timevarying_model_version", "uplift_floor", "backtest_test_start", "extended_horizon_end",
-                          "backtest_horizons", "seasonality_min_months", "acquisition_min_pairs")
+                          "backtest_horizons", "benchmark_min_support", "acquisition_min_pairs", "test_months")
 
 
 def check_configuration_version(configuration: Config) -> None:
@@ -127,6 +131,26 @@ def forecast_horizons(fine_table: pd.DataFrame, units: pd.DataFrame, configurati
     return list(range(1, max(int((end - last_truth).n), 1) + 1))
 
 
+def draw_top_sheets(results: dict, configuration: Config) -> list:
+    """The sheets of the `sheets_top_series` series with the most projected money, drawn
+    into <outdir>/diagnostics/ at the end of every analysis. Never stops the run."""
+    if not configuration.sheets_top_series:
+        return []
+    from sheet import sheet
+    card = results["series_card"]
+    top = card[card["ruta"] == "trainable"].sort_values("usd_proyectado", ascending=False).head(int(configuration.sheets_top_series))
+    print(SECTION_RULE, f"\nSHEETS — the {len(top)} series with the most projected money")
+    paths = []
+    for _, row in top.iterrows():
+        try:
+            drawn = sheet(row["fs_id"], configuration, results=results, figure=True, verbose=False)
+            paths.append(drawn["figure"])
+            print(f"   {row['fs_id'][:70]:<70} ${row['usd_proyectado']:>13,.0f}  →  {drawn['figure']}")
+        except Exception as error:
+            print(f"   {row['fs_id'][:70]:<70} sheet failed: {type(error).__name__}: {error}")
+    return paths
+
+
 def validate(results: dict, configuration: Config, started: float) -> pd.DataFrame:
     section("VALIDATION", started)
     return run_validation.run_validation(results, configuration)
@@ -150,25 +174,38 @@ def run_analysis(configuration: Config) -> dict:
     series_estimates, series_card, decision_support, parent_ladder = run_support_ladder.run_support_ladder(
         units, series_summary, dimensions["decision_eta2"], configuration)
     key_bridge = build_key_bridge(fine_table, units, decision_support, configuration)
+    composition = analysis_dimensions.run_composition_analysis(units, configuration)
 
-    section("PHASE 2 — dynamics", started); started = time.time()
-    decision_dynamics, monthly_series = analysis_dynamics.run_dynamics_analysis(units, decision_support, parent_ladder, configuration)
+    section("PHASE 2 — seasonality benchmark (big series) and pool reference", started); started = time.time()
+    test_months = units.loc[units[configuration.dataset_role_col] == "test", configuration.period_col]
+    first_test_month = str(test_months.min()) if len(test_months) else None
+    benchmark = analysis_seasonality_benchmark.run_seasonality_benchmark(series_card, units, fine_table, configuration)
+    monthly_series = analysis_backtest.monthly_series_by_estimation_id(units, decision_support, parent_ladder, configuration)
+    pool_reference = analysis_backtest.build_pool_reference(monthly_series, benchmark["decision_estacionalidad"], configuration)
 
     section("PHASE 3 — backtest, technique, bands", started); started = time.time()
     forecast_horizon = min(forecast_horizons(fine_table, units, configuration)[-1], configuration.backtest_horizon_cap)
     judged_horizons = sorted({h for h in configuration.backtest_horizons if h <= forecast_horizon} | {forecast_horizon})
-    backtest = analysis_backtest.run_backtest_analysis(monthly_series, decision_dynamics, configuration, judged_horizons)
+    backtest = analysis_backtest.run_backtest_analysis(monthly_series, pool_reference, configuration, judged_horizons, first_test_month)
 
     section("PHASE 4 — uplift", started); started = time.time()
     decision_uplift = run_uplift.run_uplift(fine_table, configuration)
 
     section("PHASE 5 — assembly, extended horizon, bands", started); started = time.time()
     decisions = dict(decision_eta2=dimensions["decision_eta2"], decision_support=decision_support,
-                     decision_dynamics=decision_dynamics, decision_technique=backtest["decision_technique"],
+                     decision_estacionalidad=benchmark["decision_estacionalidad"], pool_reference=pool_reference,
+                     decision_technique=backtest["decision_technique"],
                      decision_error_bands=backtest["decision_error_bands"], decision_uplift=decision_uplift,
-                     backtest_holdout_aggregate=backtest["backtest_holdout_aggregate"])
+                     backtest_holdout_aggregate=backtest["backtest_holdout_aggregate"],
+                     decision_aggregate_bands=backtest["decision_aggregate_bands"])
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
-                                                           decisions, monthly_series, configuration, backtest["backtest_holdout"])
+                                                           decisions, monthly_series, configuration, backtest["backtest_holdout"],
+                                                           composition["mix_shift_decomposition"])
+    baseline = analysis_baseline.run_baseline(fine_table, forecast["forecast_units_extended"], forecast["business_summary"], configuration)
+    results_so_far = dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
+                          series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
+                          decisions=decisions, backtest=backtest, dimensions=dimensions, composition=composition, forecast=forecast)
+    sheets = draw_top_sheets(results_so_far, configuration)
     report = validate(dict(
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
@@ -178,7 +215,7 @@ def run_analysis(configuration: Config) -> dict:
     return dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
                 series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
                 decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report,
-                profiles=profiles)
+                profiles=profiles, baseline=baseline, benchmark=benchmark, composition=composition, sheets=sheets)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -217,7 +254,7 @@ def run_pipeline(configuration: Config) -> dict:
     series_estimates, series_card, decision_support, parent_ladder = run_support_ladder.run_support_ladder(
         units, series_summary, decisions["decision_eta2"], configuration)
     key_bridge = build_key_bridge(fine_table, units, decision_support, configuration)
-    monthly_series = analysis_dynamics.monthly_series_by_estimation_id(units, decision_support, parent_ladder, configuration)
+    monthly_series = analysis_backtest.monthly_series_by_estimation_id(units, decision_support, parent_ladder, configuration)
     section("PHASE 4 — uplift", started); started = time.time()
     decision_uplift = run_uplift.run_uplift(fine_table, configuration)
     section("PHASE 5 — assembly (decisions read)", started); started = time.time()

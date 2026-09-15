@@ -34,6 +34,9 @@ ORIGIN_NEUTRAL = "neutro"
 def renewer_rows(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """The rows that renewed, with per-row pipeline AUV and uplift; uplift cell ids."""
     renewers = fine_table[fine_table[configuration.renewed_units_col].fillna(0) > 0].copy()
+    if configuration.uplift_window_months:
+        recent = sorted(renewers[configuration.period_col].unique())[-int(configuration.uplift_window_months):]
+        renewers = renewers[renewers[configuration.period_col].isin(recent)]
     renewers["auv_pipeline"] = renewers[configuration.pipeline_usd_col] / renewers[configuration.pipeline_units_col].clip(lower=1)
     renewers["uplift_fila"] = (renewers[configuration.renewed_usd_col] / renewers[configuration.renewed_units_col]) / renewers["auv_pipeline"]
     renewers["uplift_cell_id"] = join_columns(renewers, configuration.uplift_cell_columns)

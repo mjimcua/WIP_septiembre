@@ -21,11 +21,12 @@ import sys
 import pandas as pd
 
 # every module lives in this folder; make sure it is importable.
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from config import Config                       # noqa: E402
-from pipeline import run_analysis, run_pipeline  # noqa: E402
+from config import Config
+from pipeline import run_analysis, run_pipeline
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -57,8 +58,13 @@ if __name__ == "__main__":
         #    cells, 70 % of them under the floor)
         uplift_mandatory_dims=["regional_level_1", "product_level_1", "purchase_type", "term_level_2"],
         uplift_parent_keep_columns=["net_new"],
-        # ── the hold-out report: the last months with truth (None = last 12)
-        backtest_test_start=None,
+        # ── the calendar from the current month: the month before it is not closed
+        #    (pending), the 6 before those are the exam, everything earlier trains
+        pending_close_months=1, test_months=6,
+        # ── the seasonality benchmark: top 5 big neutral series inside each region × product family
+        benchmark_group_dims=["regional_level_1", "product_level_1"],
+        # ── the spreadsheet baseline the business compares against
+        baseline_grains=["global", "regional_level_1+product_level_1+purchase_type", "mandatory"],
         # ── experiment: let the techniques learn from the last 24 months only (pools keep all)
         technique_history_months=None,
     )

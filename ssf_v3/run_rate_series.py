@@ -16,10 +16,12 @@ import numpy as np
 import pandas as pd
 
 from binomial_reference import wilson_half_width_pp
-from config import Config, hash_key
+from config import Config, explain, hash_key
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PROJECTION_ROLE = "projection"
+PENDING_ROLE = "pending_close"
+TRUTH_ROLES = ("train", "test")          # closed months: the only truth
 ROUTE_TRAINABLE = "trainable"
 UNIVERSE_NORMAL = "normal"
 # Sign labels persisted in `signo`
@@ -80,7 +82,7 @@ def fill_history_gaps(labeled_units: pd.DataFrame, configuration: Config) -> pd.
     units["sintetica"] = 0
     period_column, role_column = configuration.period_col, configuration.dataset_role_col
     trainable = units[(units["universo"] == UNIVERSE_NORMAL) & (units["ruta"] == ROUTE_TRAINABLE)
-                      & (units[role_column] != PROJECTION_ROLE)]
+                      & (units[role_column].isin(TRUTH_ROLES))]
     if trainable.empty:
         return units
     span = trainable.groupby("fs_id")[period_column].agg(["min", "max"])
@@ -118,7 +120,7 @@ def compute_row_rates(units: pd.DataFrame, configuration: Config) -> pd.DataFram
     pipeline = rated[configuration.pipeline_units_col]
     renewed = rated[configuration.renewed_units_col]
     rated["tasa"] = np.where((rated["sintetica"] == 0) & (pipeline > 0), renewed / pipeline.replace(0, np.nan), np.nan)
-    rated.loc[rated[configuration.dataset_role_col] == PROJECTION_ROLE, "tasa"] = np.nan
+    rated.loc[~rated[configuration.dataset_role_col].isin(TRUTH_ROLES), "tasa"] = np.nan   # projection and pending: no truth
     return rated
 
 
@@ -135,7 +137,7 @@ def build_series_summary(units: pd.DataFrame, configuration: Config) -> pd.DataF
     EDGE CASES: a series with no real history month gets n_propio 0 and tasa NaN.
     """
     period_column, role_column = configuration.period_col, configuration.dataset_role_col
-    history = units[(units["universo"] == UNIVERSE_NORMAL) & (units[role_column] != PROJECTION_ROLE)]
+    history = units[(units["universo"] == UNIVERSE_NORMAL) & (units[role_column].isin(TRUTH_ROLES))]
     summary = history.groupby(["fs_id", "fs_key"], as_index=False).agg(
         n_propio=(configuration.pipeline_units_col, lambda s: float(s[s > 0].median()) if (s > 0).any() else 0.0),
         meses_historia=("sintetica", "size"),
@@ -145,7 +147,7 @@ def build_series_summary(units: pd.DataFrame, configuration: Config) -> pd.DataF
     summary["tasa_propia"] = np.where(summary["pipe"] > 0, summary["ren"] / summary["pipe"].replace(0, np.nan), np.nan)
     summary["error_binomial_pp"] = [wilson_half_width_pp(rate if np.isfinite(rate) else 0.5, support, configuration.z)
                                     for rate, support in zip(summary["tasa_propia"], summary["n_propio"])]
-    projected = (units[units[role_column] == PROJECTION_ROLE]
+    projected = (units[units[role_column].isin((PROJECTION_ROLE, PENDING_ROLE))]
                  .groupby("fs_id")[configuration.pipeline_usd_col].sum().rename("usd_proyectado"))
     summary = summary.merge(projected, on="fs_id", how="left")
     # series present only in the projection (heuristic) get a row too: they carry money
@@ -187,4 +189,8 @@ def build_rate_series(labeled_units: pd.DataFrame, configuration: Config) -> tup
     print(f"[1.1] {len(summary)} series · synthetic gap rows {int(units['sintetica'].sum())} (rate undefined) · "
           f"{len(below)} trainable series below the floor carry ${below['usd_proyectado'].sum():,.0f} "
           f"of ${summary['usd_proyectado'].sum():,.0f} projected")
+    explain(configuration,
+            "A series is one segment (region, product, plazo, banda, señales, cliente nuevo) followed month by month; its rate is renewed / expired.",
+            f"'Below the floor' = fewer than {configuration.support_floor:.0f} contracts in a typical month: a rate measured on that few moves ±15 pp by chance alone,",
+            "so those series will borrow support from a relative in the ladder instead of predicting with their own rate.")
     return units, summary

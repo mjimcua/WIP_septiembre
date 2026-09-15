@@ -102,16 +102,21 @@ PHYSICAL_TABLE_NAMES = {
     "decision_support": "decision_support",
     "decision_eta2": "decision_eta2",
     "decision_eta2_pairs": "decision_eta2_pairs",
-    "simpson_contrafactual": "simpson_contrafactual",
+    "mandatory_only_cost": "mandatory_only_cost",
     "mix_shift_decomposition": "mix_shift",
     "timevarying_calibration": "tv_calibration",
-    # ── phase 2 · dynamics
-    "decision_dynamics": "decision_dynamics",
+    # ── phase 2 · seasonality benchmark and pool reference
+    "decision_estacionalidad": "decision_estacionalidad",
+    "bench_panel_mes_anio": "bench_panel",
+    "bench_flags": "bench_flags",
+    "pool_reference": "pool_reference",
     # ── phase 3 · backtest
     "dim_tecnica": "dim_tecnica",
     "backtest_predictions": "backtest_pred",
     "backtest_holdout": "backtest_holdout",
     "backtest_holdout_aggregate": "backtest_holdout_agg",
+    "backtest_aggregate_error": "backtest_agg_error",
+    "decision_aggregate_bands": "decision_agg_bands",
     "decision_technique": "decision_technique",
     "decision_error_bands": "decision_error_bands",
     # ── phase 4 · uplift
@@ -126,6 +131,9 @@ PHYSICAL_TABLE_NAMES = {
     "forecast_by_level": "forecast_by_level",
     "pipeline_summary": "pipeline_summary",
     "business_summary": "business_summary",
+    "forecast_by_region": "forecast_by_region",
+    "baseline_forecast": "baseline_forecast",
+    "baseline_summary": "baseline_summary",
     "validation_report": "validation_report",
 }
 
@@ -164,6 +172,14 @@ def join_columns(frame: pd.DataFrame, columns: list) -> pd.Series:
 
     # [3] back to a Series that carries the caller's index
     return pd.Series(joined_ids, index=frame.index)
+
+
+def explain(configuration, *lines: str) -> None:
+    """Console: how to read the block just printed (two or three lines, indented). Silent
+    when `console_explanations` is off."""
+    if getattr(configuration, "console_explanations", True):
+        for line in lines:
+            print(f"       > {line}")
 
 
 def hash_key(identifier) -> int:
@@ -295,6 +311,19 @@ class Config:
     # only if the calibration table (tv_calibration) shows real cohorts above 95 %.
     rate_cap: float = 0.95
 
+    # ─── phase 0 · the calendar of roles (from the current month, not from the raw) ──
+    # The raw's dataset_role is OVERWRITTEN from the current month (`is_current_month`):
+    #   current month and later      → projection (results wiped: the future has not started)
+    #   the month(s) just before     → pending_close: not closed yet (people renew after
+    #                                  expiry); NOT used to evaluate, NOT used to learn;
+    #                                  forecast like a projection month, reported apart
+    #   the `test_months` before     → test: the exam (evaluation only)
+    #   everything earlier           → train
+    # Forecasting learns from train AND test (every closed month); only the choice of
+    # technique and its bands are decided without the test months.
+    pending_close_months: int = 1
+    test_months: int = 6
+
     # ─── phase 1.1 · rate series ───────────────────────────────────────────────────
     # A missing month means "no contracts were due": the rate is undefined (0/0), NOT 0 %.
     # "no_rate" is the only implemented policy (the synthetic gap row keeps the series
@@ -303,8 +332,8 @@ class Config:
     gap_rate_policy: str = "no_rate"
 
     # ─── phase 1.2 · dimension separation and mix-shift (ANALYSIS) ─────────────────
-    # Months with truth judged by the walk-forward Simpson counterfactual (flat vs
-    # segmented, each month against what happened). 12 = one full year of verdicts, so a
+    # Months with truth judged by the walk-forward valuation of the mandatory-only view
+    # (one rate per cell vs the segmented series, each month against what happened). 12 = one full year of verdicts, so a
     # seasonal cell is judged in every season. More months = more evidence, older past.
     counterfactual_window_months: int = 12
     # A cell needs this many past months before its first verdict; below it the "flat"
@@ -345,54 +374,65 @@ class Config:
     # lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the strict rule (the
     # ladder of a signed series ends at the cell × sign). 0.05 (default) lets it collapse
     # the dims that separate almost nothing (in Kamelot: band_2, band_1, product_2,
-    # product_1), i.e. cohorts nearly identical — pooled signal, not Simpson. With 10
+    # product_1), i.e. cohorts nearly identical — pooled signal, not mixed cohorts. With 10
     # mandatory dims the strict rule left 4,237 signed series ($8.3M) without a pool.
     signed_ladder_max_loss: float = 0.05
 
-    # ─── phase 2 · dynamics (ANALYSIS) ─────────────────────────────────────────────
-    # Months of history before seasonality or trend are even measured (13 = one full
-    # cycle plus one month, the minimum for a calendar profile). Below it the gate is
-    # "temporal" and the mean is used.
-    seasonality_min_months: int = 13
-    # Seasonal amplitude / yearly slope must exceed this many times the binomial bound
-    # of the pool's typical month to be declared. 2× = the movement is at least twice
-    # what sampling alone would produce. Lower to 1.5 to be more sensitive (more series
-    # compete with seasonal/trend techniques; the backtest still has the last word).
-    signal_multiple_of_bound: float = 2.0
-    # φ (observed variance / binomial variance) above which "there is an engine". A
-    # series is declared seasonal or trending ONLY above it: with φ ≈ 1 the rate only
-    # samples, and any amplitude or slope measured on it is noise (in Kamelot, hundreds
-    # of ids with φ < 1.3 showed 20-36 pp of "amplitude" on one cycle: pure sampling).
-    phi_engine_threshold: float = 1.5
-    # Seasonal techniques (T6, T7, T11) compete only on FIRM seasonality (≥ 2 full cycles,
-    # estacional = 2). With one cycle the seasonal index is last year's noise: in Kamelot
-    # they scored 5.4 binomial units on the screen against 2.3 for a 3-month average.
-    seasonal_requires_firm: bool = True
-    # Horizon after which a detected trend is considered fully damped (the inference
-    # cap): 6 months. Beyond it the techniques' own damping (φ=0.9) has removed most of
-    # the trend anyway; the label is what the forecast_by_level reader sees.
-    trend_horizon_months: int = 6
+    # ─── phase 2 · the seasonality benchmark (ANALYSIS) ────────────────────────────
+    # Months of history the TECHNIQUES see (backtest, forecast): None = all. The ladder
+    # and the pools always use the whole history (support is support); this only cuts
+    # what the techniques learn from. Try 24 and compare the hold-out of the total.
+    technique_history_months: Optional[int] = None
+    # One decision for the whole portfolio, taken where the test has power: the biggest
+    # NEUTRAL series (no flag), fully segmented, with support ≥ benchmark_min_support in
+    # EVERY closed month (±5 pp floor or better), top N by money inside each group of
+    # benchmark_group_dims (None = the first two mandatory dims). Seasonal if amplitude ≥
+    # benchmark_amplitude_pp AND both extreme months keep their sign in ≥ benchmark_consistency
+    # of the years AND the seasonal shape improves the recent level by ≥ benchmark_improvement_pct
+    # at h=6 without worsening it at h=1. If the seasonal series carry less than
+    # benchmark_material_share_pct of the sample's money, the rate has NO material
+    # seasonality and the rate branch keeps level techniques only.
+    benchmark_group_dims: list = field(default_factory=list)
+    benchmark_top_n: int = 5
+    benchmark_min_support: float = 271.0
+    benchmark_min_months: int = 36
+    benchmark_short_months: int = 24
+    benchmark_min_years: int = 2
+    benchmark_amplitude_pp: float = 2.0
+    benchmark_consistency: float = 0.67
+    benchmark_improvement_pct: float = 10.0
+    benchmark_material_share_pct: float = 10.0
+    # The extreme months must ALSO stand out of the noise: their mean standardized
+    # residual |z| (rate − trend, in binomial errors) ≥ this. Without it, on 40 simulated
+    # pure-noise series the criteria declared 4 seasonal (10 %); with it, 0, and the power
+    # on an 8 pp planted season stayed at 34/40. Measured, not assumed (test_statistics S5).
+    benchmark_min_extreme_z: float = 1.0
 
     # ─── phase 3 · backtest, technique, bands (ANALYSIS) ───────────────────────────
-    # First month of the hold-out report ("the 2026 months that already happened"):
-    # months ≥ this with truth are reported as the out-of-sample exam. None = the last
-    # 12 months with truth. Training always uses the WHOLE history before each origin.
+    # First month of the hold-out: the months ≥ this are NEVER used to choose techniques
+    # or to measure bands; they are the exam. None = the first month with role 'test' in
+    # the extract (the extract's own split), else the last `holdout_default_months`.
+    # Training always uses the whole history before each origin.
     backtest_test_start: Optional[str] = None
+    holdout_default_months: int = 6
     # Months of history before the first origin. 8 = enough for every non-seasonal
     # technique to be eligible (ma6, ses, drift); seasonal ones wait for 13 anyway.
     backtest_min_history_months: int = 8
-    # The judge uses only the most recent targets (the hold-out is inside them). 24 =
-    # two years of verdicts, so both seasons and the recent regime count. Halve it if
-    # the backtest is slow; the champion changes little, the bands lose evidence.
-    backtest_max_targets: int = 24
+    # The judge uses only the most recent target months: the business changes, so the
+    # evidence must be as recent as possible. 6 = the last half year of verdicts.
+    backtest_max_targets: int = 6
     # Horizons judged. Sparse on purpose (bands are monotone in h, so the nearest lower
     # judged horizon is a safe band for the ones in between); the forecast horizon H is
     # added automatically. [1,2,3,4] for the operational months, 6/9/12 for the year.
-    backtest_horizons: list = field(default_factory=lambda: [1, 2, 3, 4, 6, 9, 12])
+    # TWO test batteries, two views: the SHORT one (predict next month with data up to
+    # the previous month: h=1) and the MEDIUM-LONG one (predict a month with data up to
+    # six months before: h=6). Months further than six ahead use the six-month evidence
+    # and are re-forecast every month.
+    backtest_horizons: list = field(default_factory=lambda: [1, 6])
     # Two-stage judge: every eligible technique is screened at these horizons to choose
     # the champion; then only champion + challenger are judged at every horizon. {1,3,6}
     # covers the operational month, the quarter and the half-year with ~3× less cost.
-    backtest_screen_horizons: list = field(default_factory=lambda: [1, 2, 3, 6, 12])
+    backtest_screen_horizons: list = field(default_factory=lambda: [1, 6])
     # Horizon bands: ONE champion per band, not one per pool. A 3-month average wins the
     # near months and knows nothing about January twelve months out; a seasonal or mixed
     # technique may lose at h=1 and win at h=12. Each band is judged with the screen
@@ -401,14 +441,8 @@ class Config:
     # first, so its technique is chosen on its own evidence. Beyond `backtest_horizon_cap`
     # nothing is judged: a month 16 ahead is predicted as if 12 ahead (same technique,
     # same band). The error there is large and declared, not measured.
-    backtest_horizon_bands: dict = field(default_factory=lambda: {"h1": [1, 1], "corto": [2, 3], "medio": [4, 6], "largo": [7, 12]})
-    backtest_horizon_cap: int = 12
-    # Months of history the TECHNIQUES see (dynamics, backtest, forecast): None = all.
-    # The ladder and the pools always use the whole history (support is support); this
-    # only cuts what the techniques learn from. In a portfolio where "everything changed"
-    # (products replaced, flags born in 2023, regimes), 24 keeps two cycles of the world
-    # that still exists. Try 24 and compare the hold-out of the total.
-    technique_history_months: Optional[int] = None
+    backtest_horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 1], "medio_largo": [2, 999]})
+    backtest_horizon_cap: int = 6
     # What to persist of the long backtest table (`backtest_pred`): "chosen" = only the
     # rows of each band's champion and the challenger (~25 % of the rows: enough to audit
     # the decision and the hold-out); "all" = every technique (the full error-by-horizon
@@ -431,10 +465,17 @@ class Config:
     # tenth of a sampling error: enough to ignore luck, small enough to let real signal
     # through. The leaderboard (P3.1) shows how far apart techniques really are.
     challenger_margin_normalized: float = 0.10
-    # Among techniques within the margin of the best, the richer family (time series >
-    # smoothing > average > naive) wins — but only when the id has at least this many
-    # months of history: a time-series technique chosen on 14 months is a story, not a
-    # model. 24 = two full cycles. Below it, the simplest technique within the margin wins.
+    # Margin per horizon band, overriding the one above where set. Far from now the
+    # challenger (a short window) carries no information about the shape of the future,
+    # so a technique that merely TIES it there should be allowed to win when it uses more
+    # history: the margin to dethrone the challenger shrinks with the horizon, and within
+    # the margin the technique with the longest MEMORY wins (see techniques.MEMORY_MONTHS).
+    # Never below zero: a technique still has to be at least as good as the challenger.
+    challenger_margin_by_band: dict = field(default_factory=lambda: {"corto": 0.10, "medio_largo": 0.0})
+    # Among techniques within the margin of the best, the technique with more memory (and
+    # then the richer family: time series > smoothing > average) wins — but only when the
+    # id has at least this many months of history: a month-effect technique chosen on 14
+    # months is a story, not a model. 24 = two full cycles. Below it, the simplest wins.
     richer_family_min_history_months: int = 24
     # Predictions an (id, h) needs for its OWN error quantiles; below it the band comes
     # from the family (same technique, every id). 20 predictions make a p5/p95 that is
@@ -466,6 +507,11 @@ class Config:
     # newcust) that a small cell must not lose when it borrows. Empty = the parent is
     # the mandatory cell.
     uplift_parent_keep_columns: list = field(default_factory=list)
+    # Months of history the uplift is estimated on: None = all. The uplift tracks the
+    # discount mix, recovery campaigns (lower it) and price rises (raise it): a price rise
+    # is a step, and the whole-history ratio averages before and after. 12 keeps the
+    # current price regime. The parent/cell fallbacks use the same window.
+    uplift_window_months: Optional[int] = None
     # Bootstrap resamples for the uplift band. 200 gives a stable p5/p95 in milliseconds
     # (numpy resampling); 1000 changes the third decimal.
     uplift_bootstrap_samples: int = 200
@@ -508,10 +554,26 @@ class Config:
     # narrows (by construction); this is a mix signal, not a calibration one.
     band_narrowing_tolerance_pct: float = 1.0
 
+    # ─── sheets drawn at the end of every analysis ─────────────────────────────────
+    # After the forecast, the sheet (six-panel figure + story) of the N series with the
+    # most projected money is drawn into <outdir>/diagnostics/. 5 by default; 0 disables.
+    sheets_top_series: int = 5
+
     # ─── console ───────────────────────────────────────────────────────────────────
-    # Rows printed per listing (ids with an engine, cells, champions...). The tables hold
+    # Rows printed per listing (cells, champions, candidates...). The tables hold
     # everything; the console shows the top by support or money. 15 fits a screen.
     console_top_rows: int = 15
+    # Print, after every block of numbers, two or three lines that say how to read them
+    # (what a binomial unit is, what a band promises, why the mean is not the forecast).
+    # Off for the delegated monthly run once the reader knows the framework.
+    console_explanations: bool = True
+
+    # ─── baseline (ANALYSIS) ────────────────────────────────────────────────────────
+    # Grains of the spreadsheet baseline: "global" (one dollar rate for the portfolio),
+    # "mandatory" (every mandatory dim), or a '+'-joined list of columns (a coarse cut,
+    # e.g. "regional_level_1+product_level_1+purchase_type"). Each grain × window (1, 3,
+    # 12 months) gives a forecast and its own walk-forward error, next to the framework's.
+    baseline_grains: list = field(default_factory=lambda: ["global", "mandatory"])
 
     # ─── governance ────────────────────────────────────────────────────────────────
     # Version (as-of) of the model that produces each timevarying flag, stamped on the

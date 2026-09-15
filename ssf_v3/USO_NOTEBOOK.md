@@ -135,6 +135,9 @@ configuration = SFFConfig(
     extension_row_filter={"term_level_2": ["1 year"]},
     uplift_mandatory_dims=["regional_level_1", "product_level_1", "purchase_type", "term_level_2"],
     uplift_parent_keep_columns=["net_new"],
+    baseline_grains=["global", "regional_level_1+product_level_1+purchase_type", "mandatory"],
+    pending_close_months=1, test_months=6,   # calendario desde el mes en curso: agosto pendiente, feb-jul examen
+    benchmark_group_dims=["regional_level_1", "product_level_1"],   # el benchmark de estacionalidad: top 5 por grupo
     technique_history_months=None,       # segunda ejecución: 24, y comparar el hold-out del total
 )
 results = run_analysis(configuration)

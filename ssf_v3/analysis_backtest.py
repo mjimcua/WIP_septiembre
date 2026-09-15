@@ -31,8 +31,8 @@ import numpy as np
 import pandas as pd
 
 from binomial_reference import binomial_se_pp, inverse_logit, logit, weighted_quantile
-from config import Config
-from techniques import CATALOGUE, eligible_techniques, family_rank, month_numbers_of, technique_dimension
+from config import Config, explain
+from techniques import CATALOGUE, eligible_techniques, family_rank, memory_rank, month_numbers_of, technique_dimension
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 CHALLENGER_ORIGIN = "retador"
@@ -40,19 +40,76 @@ CHAMPION_ORIGIN = "campeon"
 # (intermittent_zero_share is a Config parameter: see config.py, phase 3)
 
 
-def dynamics_labels(decision_dynamics: pd.DataFrame, requires_firm: bool = True) -> dict:
-    """id_estimacion → dict(estacional, tendencia, intermitente, requiere_firme)."""
+def monthly_series_by_estimation_id(units: pd.DataFrame, decision_support: pd.DataFrame,
+                                    parent_ladder: pd.DataFrame, configuration: Config) -> dict:
+    """The monthly (rate, support) series of every estimation id.
+
+    INPUT:   units with tasa · decision_support (the chosen ids) · parent_ladder (every
+             fs_id × rung pattern: the MEMBERSHIP of each pattern) · configuration.
+    OUTPUT:  dict id_estimacion → DataFrame(index=Period, columns ren, pipe, rate), built by
+             SUMMING, month by month, EVERY series that matches the pattern — big siblings
+             included, whether or not they chose that relative themselves. The pattern
+             decides who computes the number; the ladder decides who receives it.
+    RULES:   closed months with a defined rate. `technique_history_months` cuts what the
+             techniques learn from (the last N months); the pools keep every month.
+    """
+    history = units[(units["universo"] == "normal") & units["tasa"].notna()]
+    chosen_ids = set(decision_support["id_estimacion"])
+    membership = parent_ladder[parent_ladder["padre_id"].isin(chosen_ids)][["fs_id", "padre_id"]].drop_duplicates()
+    membership = membership.rename(columns={"padre_id": "id_estimacion"})
+    own_ids = decision_support[~decision_support["id_estimacion"].isin(membership["id_estimacion"])][["fs_id", "id_estimacion"]]
+    membership = pd.concat([membership, own_ids], ignore_index=True).drop_duplicates()
+    joined = history.merge(membership, on="fs_id")
+    window = configuration.technique_history_months
+    series = {}
+    for estimation_id, rows in joined.groupby("id_estimacion"):
+        monthly = rows.groupby(configuration.period_col).agg(
+            ren=(configuration.renewed_units_col, "sum"), pipe=(configuration.pipeline_units_col, "sum")).sort_index()
+        monthly["rate"] = np.where(monthly["pipe"] > 0, monthly["ren"] / monthly["pipe"].replace(0, np.nan), np.nan)
+        if window is not None:
+            monthly = monthly.tail(int(window))
+        series[estimation_id] = monthly
+    return series
+
+
+def build_pool_reference(monthly_series: dict, decision_estacionalidad: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """One row per estimation id with what the backtest and the bands need — nothing more:
+    meses, n_pool (median monthly support), tasa_pool, gate ('soporte' below the floor,
+    'nivel' otherwise), estacional (1 only if the benchmark declared THIS series seasonal;
+    a pool is a series only when it predicts alone), tendencia (the benchmark's verdict).
+    Persisted as `pool_reference`. No per-pool diagnostics: the calendar decision is the
+    benchmark's, taken once for the portfolio."""
+    seasonal = set(decision_estacionalidad.loc[decision_estacionalidad["veredicto_estacional"] == 1, "fs_id"]) if len(decision_estacionalidad) else set()
+    trend = dict(zip(decision_estacionalidad["fs_id"], decision_estacionalidad["veredicto_tendencia"])) if len(decision_estacionalidad) else {}
+    rows = []
+    for estimation_id, monthly in monthly_series.items():
+        valid = monthly[monthly["rate"].notna() & (monthly["pipe"] > 0)]
+        support = float(valid["pipe"].median()) if len(valid) else 0.0
+        pooled = float(valid["ren"].sum() / max(valid["pipe"].sum(), 1)) if len(valid) else np.nan
+        rows.append(dict(id_estimacion=estimation_id, meses=int(len(valid)), n_pool=round(support, 1),
+                         tasa_pool=round(pooled, 4) if np.isfinite(pooled) else np.nan,
+                         gate="soporte" if support < configuration.support_floor else "nivel",
+                         estacional=int(estimation_id in seasonal), tendencia=int(trend.get(estimation_id, 0))))
+    reference = pd.DataFrame(rows, columns=["id_estimacion", "meses", "n_pool", "tasa_pool", "gate", "estacional", "tendencia"])
+    configuration.write(reference, "pool_reference")
+    print(f"[2] pool reference: {len(reference)} estimation ids · {(reference['gate'] == 'nivel').sum()} with support · "
+          f"{int(reference['estacional'].sum())} with month effects (the benchmark's seasonal series)")
+    return reference
+
+
+def dynamics_labels(pool_reference: pd.DataFrame) -> dict:
+    """id_estimacion → dict(estacional, tendencia, intermitente): the labels the techniques'
+    eligibility reads, taken from the pool reference (which carries the benchmark's verdict)."""
     labels = {}
-    for _, row in decision_dynamics.iterrows():
-        labels[row["id_estimacion"]] = dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]),
-                                            intermitente=0, requiere_firme=requires_firm)
+    for _, row in pool_reference.iterrows():
+        labels[row["id_estimacion"]] = dict(estacional=int(row["estacional"]), tendencia=int(row["tendencia"]), intermitente=0)
     return labels
 
 
 def backtest_parameters(configuration: Config) -> dict:
     """The few numbers the backtest loop needs, picklable for the worker processes."""
     return dict(min_history=configuration.backtest_min_history_months, max_targets=configuration.backtest_max_targets,
-                intermittent_zero_share=configuration.intermittent_zero_share)
+                intermittent_zero_share=configuration.intermittent_zero_share, holdout_start=None)
 
 
 def _backtest_chunk(arguments: tuple) -> list:
@@ -70,7 +127,14 @@ def _backtest_chunk(arguments: tuple) -> list:
         logit_rates, month_numbers = logit(rates), month_numbers_of(months)
         dynamics = dict(labels.get(estimation_id, {}))
         dynamics["intermitente"] = int(np.mean(rates < 0.02) >= parameters["intermittent_zero_share"])
-        first_target = max(parameters["min_history"], len(valid) - parameters["max_targets"])
+        # the most recent `max_targets` DECISION months (before the hold-out) plus every
+        # hold-out month: the exam never eats the evidence
+        holdout_start = parameters.get("holdout_start")
+        if holdout_start:
+            decision_positions = [i for i, m in enumerate(months) if str(m) < holdout_start]
+            first_target = max(parameters["min_history"], (decision_positions[-parameters["max_targets"]] if len(decision_positions) >= parameters["max_targets"] else (decision_positions[0] if decision_positions else len(valid))))
+        else:
+            first_target = max(parameters["min_history"], len(valid) - parameters["max_targets"])
         eligible_by_length = {}
         for target_position in range(first_target, len(valid)):
             real, n_real = rates[target_position], supports[target_position]
@@ -102,8 +166,8 @@ def _backtest_chunk(arguments: tuple) -> list:
     return rows
 
 
-def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFrame, horizons: list,
-                            configuration: Config, techniques_by_id: dict = None) -> pd.DataFrame:
+def rolling_origin_backtest(monthly_series: dict, pool_reference: pd.DataFrame, horizons: list,
+                            configuration: Config, techniques_by_id: dict = None, holdout_start: str = None) -> pd.DataFrame:
     """The long table of predictions: one row per (id, target, h, technique).
 
     OUTPUT:  backtest_long: id_estimacion, mes_objetivo, origen, h, tecnica_id, tasa_pred,
@@ -111,7 +175,7 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
              month with its own n), err_norm (err_pp / se_binom_pp).
     RULES:   history ≤ origin only; the target must have a defined rate and n > 0.
              Only estimation ids WITH SUPPORT are judged (gate ≠ 'soporte'): a series under
-             the floor gets the challenger and a binomial band by doctrine (P9), and
+             the floor gets the challenger and a binomial band, and
              judging it would cost the same as judging a real pool for nothing. Targets =
              the most recent `backtest_max_targets` months; the history before each
              origin is the whole history.
@@ -119,10 +183,11 @@ def rolling_origin_backtest(monthly_series: dict, decision_dynamics: pd.DataFram
              second stage: champion + challenger only); None = every eligible technique.
     COST:    ≈ targets × horizons × techniques per id. The logit is computed once per id.
     """
-    labels = dynamics_labels(decision_dynamics, configuration.seasonal_requires_firm)
-    gate_by_id = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["gate"]))
+    labels = dynamics_labels(pool_reference)
+    gate_by_id = dict(zip(pool_reference["id_estimacion"], pool_reference["gate"]))
     items = list(monthly_series.items())
     parameters = backtest_parameters(configuration)
+    parameters["holdout_start"] = holdout_start
     workers = max(1, int(configuration.backtest_workers))
     if workers == 1 or len(items) < 2 * workers:
         rows = _backtest_chunk((items, labels, gate_by_id, horizons, parameters, techniques_by_id))
@@ -154,11 +219,13 @@ def select_technique(backtest_long: pd.DataFrame, configuration: Config, history
              tecnica_origen (campeon/retador), err_norm_medio, err_pp_medio,
              n_predicciones, retador_err_norm.
     RULES:   per band, score = mean |err_norm| over the screen horizons inside the band
-             and every origin. Champion = lowest score with n_predicciones ≥ minimum AND
-             score < challenger score − margin; among candidates within the margin of the
-             best, the richest family wins when the id has ≥ richer_family_min_history_months
-             of history; else the simplest. A band with no screen horizon inside it takes
-             the champion of the previous band.
+             and every origin. The margin is the band's (`challenger_margin_by_band`):
+             0.10 near, 0 far. Champion = lowest score with n_predicciones ≥ minimum AND
+             score ≤ challenger score − margin; among candidates within the margin of the
+             best, the technique with the longest MEMORY wins (then the richest family)
+             when the id has ≥ richer_family_min_history_months of history; else the
+             simplest. Far from now, tying the challenger with more memory is enough.
+             A band with no screen horizon inside it takes the previous band's champion.
     """
     rows = []
     challenger = configuration.challenger_technique
@@ -169,15 +236,18 @@ def select_technique(backtest_long: pd.DataFrame, configuration: Config, history
         scores = absolute.groupby("tecnica_id").agg(err_norm_medio=("abs_norm", "mean"), err_pp_medio=("abs_pp", "mean"),
                                                     n_predicciones=("err_norm", "size"))
         challenger_score = float(scores.loc[challenger, "err_norm_medio"]) if challenger in scores.index else np.inf
+        margin = float((configuration.challenger_margin_by_band or {}).get(band_name, configuration.challenger_margin_normalized))
         candidates = scores[scores["n_predicciones"] >= configuration.backtest_min_predictions]
         best_score = candidates["err_norm_medio"].min() if len(candidates) else np.inf
-        within_margin = candidates[candidates["err_norm_medio"] <= best_score + configuration.challenger_margin_normalized]
+        within_margin = candidates[candidates["err_norm_medio"] <= best_score + max(margin, 1e-9)]
         chosen, origin = challenger, CHALLENGER_ORIGIN
-        if len(within_margin) and best_score < challenger_score - configuration.challenger_margin_normalized:
+        # a champion must be at least `margin` better than the challenger; with margin 0
+        # (far bands) tying the challenger is enough — memory then decides
+        if len(within_margin) and best_score < challenger_score - margin + 1e-12 and best_score <= challenger_score:
             enough_history = (history_months or {}).get(estimation_id, 0) >= configuration.richer_family_min_history_months
             rank_sign = 1 if enough_history else -1
-            chosen = max(within_margin.index, key=lambda t: (rank_sign * family_rank(t), -within_margin.loc[t, "err_norm_medio"]))
-            origin = CHAMPION_ORIGIN
+            chosen = max(within_margin.index, key=lambda t: (rank_sign * memory_rank(t), rank_sign * family_rank(t), -within_margin.loc[t, "err_norm_medio"]))
+            origin = CHAMPION_ORIGIN if chosen != challenger else CHALLENGER_ORIGIN
         row = scores.loc[chosen] if chosen in scores.index else pd.Series(dict(err_norm_medio=np.nan, err_pp_medio=np.nan, n_predicciones=0))
         rows.append(dict(id_estimacion=estimation_id, tramo_h=band_name, h_min=bands[band_name][0], h_max=bands[band_name][1],
                          tecnica=chosen, tecnica_origen=origin,
@@ -253,7 +323,7 @@ def error_bands(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, h
 
 
 def holdout_report(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, decision_error_bands: pd.DataFrame,
-                   configuration: Config) -> pd.DataFrame:
+                   configuration: Config, holdout_start: str = None) -> pd.DataFrame:
     """The hold-out: months ≥ backtest_test_start predicted with the chosen technique.
 
     OUTPUT:  backtest_holdout: id_estimacion, mes_objetivo, h, tecnica, tasa_pred,
@@ -262,10 +332,7 @@ def holdout_report(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame
     """
     if backtest_long.empty:
         return pd.DataFrame()
-    start = configuration.backtest_test_start
-    if start is None:
-        months = sorted(backtest_long["mes_objetivo"].unique())
-        start = months[-12] if len(months) >= 12 else months[0]
+    start = holdout_start or holdout_start_month(backtest_long, configuration)
     technique_at = technique_for(decision_technique)
     chosen = pd.DataFrame([dict(id_estimacion=i, h=h, tecnica_id=t) for (i, h), t in technique_at.items()])
     holdout = backtest_long[backtest_long["mes_objetivo"] >= start].merge(chosen, on=["id_estimacion", "h", "tecnica_id"])
@@ -326,8 +393,43 @@ def holdout_aggregate(holdout: pd.DataFrame) -> pd.DataFrame:
     return monthly.drop(columns=["pred_n", "real_n"])
 
 
-def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame, configuration: Config,
-                          horizons: list) -> dict:
+def holdout_start_month(backtest_long: pd.DataFrame, configuration: Config, first_test_month: str = None) -> str:
+    """The first hold-out month: `backtest_test_start` if set; else the first month with
+    role 'test' in the extract; else the last `holdout_default_months` target months."""
+    if configuration.backtest_test_start:
+        return str(configuration.backtest_test_start)
+    if first_test_month:
+        return str(first_test_month)
+    if backtest_long.empty:
+        return None
+    months = sorted(backtest_long["mes_objetivo"].unique())
+    return months[-configuration.holdout_default_months] if len(months) >= configuration.holdout_default_months else months[0]
+
+
+def aggregate_error_bands(backtest_long: pd.DataFrame, decision_technique: pd.DataFrame, holdout_start: str,
+                          configuration: Config) -> tuple:
+    """The COMMON error: the error of the whole portfolio summed per target month and
+    horizon, with the chosen technique of each pool, over the DECISION months (before
+    the hold-out). Its quantiles per h are the band component that the per-pool
+    quadrature cannot see: pools missing together, in the same direction.
+    OUTPUT: (aggregate_error table: mes_objetivo, h, n, tasa_pred_agg, tasa_real_agg,
+             err_agg_pp;  decision_aggregate_bands: h, q_low_pp, q_high_pp, sesgo_pp, meses)."""
+    technique_at = technique_for(decision_technique)
+    chosen = pd.DataFrame([dict(id_estimacion=i, h=h, tecnica_id=t) for (i, h), t in technique_at.items()])
+    rows = backtest_long[backtest_long["mes_objetivo"] < holdout_start].merge(chosen, on=["id_estimacion", "h", "tecnica_id"])
+    aggregate = holdout_aggregate(rows)
+    bands = []
+    if len(aggregate):
+        for h, block in aggregate.groupby("h"):
+            errors = block["err_agg_pp"].to_numpy()
+            bands.append(dict(h=int(h), q_low_pp=round(float(np.quantile(errors, configuration.band_low_quantile)), 3),
+                              q_high_pp=round(float(np.quantile(errors, configuration.band_high_quantile)), 3),
+                              sesgo_pp=round(float(errors.mean()), 3), meses=int(len(errors))))
+    return aggregate, pd.DataFrame(bands, columns=["h", "q_low_pp", "q_high_pp", "sesgo_pp", "meses"])
+
+
+def run_backtest_analysis(monthly_series: dict, pool_reference: pd.DataFrame, configuration: Config,
+                          horizons: list, first_test_month: str = None) -> dict:
     """Phase 3 end to end, in two stages. Persists dim_tecnica, backtest_predictions,
     decision_technique, decision_error_bands, backtest_holdout.
 
@@ -340,17 +442,28 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
     """
     configuration.write(technique_dimension(), "dim_tecnica")
     screen_horizons = sorted({h for h in configuration.backtest_screen_horizons if h in horizons} | {horizons[0]})
-    screen = rolling_origin_backtest(monthly_series, decision_dynamics, screen_horizons, configuration)
-    history_months = dict(zip(decision_dynamics["id_estimacion"], decision_dynamics["meses"]))
-    decision_technique = select_technique(screen, configuration, history_months)
+    # the hold-out cut is known before predicting: `backtest_test_start`, else the first
+    # 'test' month of the extract; the target window is counted before it
+    provisional = holdout_start_month(pd.DataFrame({"mes_objetivo": []}), configuration, first_test_month) if (configuration.backtest_test_start or first_test_month) else None
+    screen = rolling_origin_backtest(monthly_series, pool_reference, screen_horizons, configuration, holdout_start=provisional)
+    holdout_start = holdout_start_month(screen, configuration, first_test_month) if len(screen) else None
+    history_months = dict(zip(pool_reference["id_estimacion"], pool_reference["meses"]))
+    # DECIDE on the months before the hold-out only: the champion and its bands never see
+    # the months they are later judged on (otherwise the hold-out calibration is circular)
+    decision_rows = screen[screen["mes_objetivo"] < holdout_start] if holdout_start else screen
+    decision_technique = select_technique(decision_rows, configuration, history_months)
     remaining = [h for h in horizons if h not in screen_horizons]
     chosen_and_challenger = {}
     for _, row in decision_technique.iterrows():
         chosen_and_challenger.setdefault(row["id_estimacion"], {configuration.challenger_technique}).add(row["tecnica"])
-    judged = rolling_origin_backtest(monthly_series, decision_dynamics, remaining, configuration, chosen_and_challenger) if remaining else screen.head(0)
+    judged = rolling_origin_backtest(monthly_series, pool_reference, remaining, configuration, chosen_and_challenger, holdout_start) if remaining else screen.head(0)
     backtest_long = pd.concat([screen, judged], ignore_index=True).sort_values(["id_estimacion", "mes_objetivo", "h", "tecnica_id"])
-    bands = error_bands(backtest_long, decision_technique, horizons, configuration)
-    holdout = holdout_report(backtest_long, decision_technique, bands, configuration)
+    decision_long = backtest_long[backtest_long["mes_objetivo"] < holdout_start] if holdout_start else backtest_long
+    bands = error_bands(decision_long, decision_technique, horizons, configuration)
+    holdout = holdout_report(backtest_long, decision_technique, bands, configuration, holdout_start)
+    aggregate_error, aggregate_bands = aggregate_error_bands(backtest_long, decision_technique, holdout_start, configuration)
+    configuration.write(aggregate_error, "backtest_aggregate_error")
+    configuration.write(aggregate_bands, "decision_aggregate_bands")
     if configuration.backtest_persist == "all":
         configuration.write(backtest_long, "backtest_predictions")
     elif configuration.backtest_persist == "chosen":
@@ -373,12 +486,17 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
         print("[3] leaderboard by horizon band (mean |error| in binomial units; 1.0 = one sampling error):")
         table = scored.groupby(["tecnica_id", "tramo_h"])["abs_norm"].mean().unstack("tramo_h").reindex(columns=list(bands_map))
         table = table.sort_values(list(bands_map)[0])
-        print("   " + f"{'technique':<20}" + "".join(f"{b:>9}" for b in table.columns))
+        print("   " + f"{'technique':<22}" + "".join(f"{b:>14}" for b in table.columns))
         for technique_id, row in table.iterrows():
-            print("   " + f"{technique_id:<20}" + "".join(f"{v:9.2f}" if pd.notna(v) else f"{'-':>9}" for v in row))
+            print("   " + f"{technique_id:<22}" + "".join(f"{v:14.2f}" if pd.notna(v) else f"{'-':>14}" for v in row))
         for band_name, block in decision_technique.groupby("tramo_h", sort=False):
             print(f"[3] champions {band_name:<6} {block['tecnica'].value_counts().head(6).to_dict()} · "
                   f"{(block['tecnica_origen'] == CHAMPION_ORIGIN).mean():.0%} beat the challenger")
+        explain(configuration,
+                "A binomial unit = the sampling error of the month being predicted (√(p(1−p)/n) of that pool that month). 1.0 is the floor no method can beat;",
+                "2.0 means the technique misses by twice what chance alone would. Scores are comparable across pools of 50 and of 5,000 contracts because of this scaling.",
+                f"'corto' = predicting next month with data up to the previous one; 'medio_largo' = predicting with data up to six months before. The challenger ({configuration.challenger_technique}) is 'the last quarter';",
+                "a champion must beat it by the band's margin (0.10 units near; a tie is enough far away, where more memory wins). Decisions use only the months BEFORE the exam.")
         print_candidates(decision_technique, screen, configuration)
     if len(holdout):
         weighted = holdout.assign(abs_pp=holdout["err_pp"].abs(), w=holdout["n_real"])
@@ -393,8 +511,19 @@ def run_backtest_analysis(monthly_series: dict, decision_dynamics: pd.DataFrame,
         if len(aggregate):
             by_h_agg = aggregate.groupby("h").agg(err=("err_agg_pp", lambda e: float(e.abs().mean())), bias=("err_agg_pp", "mean"),
                                                   worst=("err_agg_pp", lambda e: float(e.abs().max())), meses=("mes_objetivo", "nunique"))
-            print("[3] HOLD-OUT OF THE TOTAL (all pools summed, units-weighted): the error of the aggregate month, which per-pool bands cannot give")
+            print(f"[3] HOLD-OUT OF THE TOTAL (months ≥ {holdout_start}, all pools summed, units-weighted): the error of the aggregate month")
             for h, row in by_h_agg.iterrows():
                 print(f"   h={int(h):>2}: |error of the total| {row['err']:.2f} pp · bias {row['bias']:+.2f} pp · worst month {row['worst']:.2f} pp · {int(row['meses'])} months")
+            explain(configuration,
+                    "The hold-out is the exam: months never used to choose techniques or to measure bands, predicted as if unknown and compared with what happened.",
+                    "'inside band' should be close to 90 % if the band is honest (a 90 % band): far above = too wide, far below = too narrow.",
+                    "'bias' with a sign = we systematically over- (+) or under-forecast (−); a bias that grows with h says the level moved and history lags behind.",
+                    "The TOTAL's error is what the business will see: pools that miss together do not cancel, which is why it is measured separately from the per-pool error.")
+        if len(aggregate_bands):
+            print(f"[3] COMMON ERROR BAND (aggregate error over the decision months < {holdout_start}, p5/p95 per h): what pools missing "
+                  f"TOGETHER costs; added to the per-pool quadrature in the total's band")
+            for _, row in aggregate_bands.iterrows():
+                print(f"   h={int(row['h']):>2}: {row['q_low_pp']:+.2f} / {row['q_high_pp']:+.2f} pp · bias {row['sesgo_pp']:+.2f} pp · {int(row['meses'])} months")
     return dict(backtest_long=backtest_long, decision_technique=decision_technique, decision_error_bands=bands,
-                backtest_holdout=holdout, backtest_holdout_aggregate=aggregate)
+                backtest_holdout=holdout, backtest_holdout_aggregate=aggregate, backtest_aggregate_error=aggregate_error,
+                decision_aggregate_bands=aggregate_bands, holdout_start=holdout_start)

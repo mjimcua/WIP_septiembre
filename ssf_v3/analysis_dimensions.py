@@ -14,17 +14,19 @@ Three things are decided or measured here, all at the level of the forecast seri
        · ω²              — η² discounted by the number of groups (many categories with
                           few series look like signal by chance).
      Plus pairs: η² of the joint key vs the individuals → interactions.
-     Timevarying dims are OUT (doctrine: they are handled by sign, not by η²).
+     Timevarying dims are OUT (they are handled by sign, not by η²).
      Method: weighted least squares of the series rate on the dimensions as categoricals
      (a weighted factorial ANOVA), numpy only. ANCOVA is not needed: everything is
-     categorical (continuous discounts are binned by doctrine).
+     categorical (continuous discounts arrive already binned).
 
-  2. MIX-SHIFT → `simpson_contrafactual`, `mix_shift_decomposition`. Per mandatory cell
-     and month (walk-forward over the last months with truth): flat method vs segmented
-     method with the REAL weights of the month, both against what happened; the saving
-     in dollars. And the Kitagawa decomposition of the change of the aggregate rate into
-     a behaviour term (Σ w·Δp) and a composition term (Σ p·Δw): the quiet version of
-     Simpson, with own numbers, no case hunting.
+  2. COMPOSITION → `mandatory_only_cost`, `mix_shift_decomposition`. We COUNT composition,
+     we do not hunt for its extreme cases. Per mandatory cell and month (walk-forward over
+     the last months with truth): what predicting with the mandatory dims only (one rate
+     per cell) would have cost against predicting the segmented series with the real
+     weights of the month — the over/under-estimation of the mandatory-only view, in
+     dollars. And the Kitagawa decomposition of the change of the aggregate rate into a
+     behaviour term (Σ w·Δp) and a composition term (Σ p·Δw): how much of the movement is
+     the mix of the pipeline, how much is people renewing differently.
 
   3. TIMEVARYING CALIBRATION → `timevarying_calibration`. The realized rate per flag
      and per sign, month by month, with its binomial error: the audit of every model
@@ -38,7 +40,7 @@ import numpy as np
 import pandas as pd
 
 from binomial_reference import binomial_se_pp
-from config import Config, join_columns
+from config import Config, explain, join_columns
 from run_rate_series import PROJECTION_ROLE, ROUTE_TRAINABLE, UNIVERSE_NORMAL
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -150,7 +152,7 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
              orden_colapso (1 = first mandatory to collapse; 0 for extras),
              perdida_secuencial (R² lost when it collapses, given what remains).
     RULES:   base = trainable series with history, NEUTRAL sign only (timevarying are out
-             by doctrine and their series would contaminate the rates); weights = n_propio.
+             by sign, and their series would contaminate the rates); weights = n_propio.
     EDGE CASES: fewer than 3 series → every figure 0 (no evidence, declared).
     """
     dims = configuration.business_mandatory_dims + configuration.extra_renovacion
@@ -196,7 +198,7 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def counterfactual_and_decomposition(units: pd.DataFrame, configuration: Config) -> tuple:
-    """Walk-forward Simpson counterfactual and Kitagawa decomposition per mandatory cell × month.
+    """The cost of the mandatory-only view and the Kitagawa decomposition, per mandatory cell × month.
 
     INPUT:   units with tasa (history) · configuration.
     OUTPUT:  (counterfactual, decomposition).
@@ -323,11 +325,11 @@ def print_mix_shift_by_cell(counterfactual: pd.DataFrame, decomposition: pd.Data
     The same view in SQL (Power BI):
         SELECT c.celda_id, SUM(c.ahorro_usd) ahorro_usd, AVG(c.gana_segmentado) pct_gana,
                AVG(ABS(m.delta_composicion_pp)) riesgo_mix_pp, AVG(ABS(m.delta_comportamiento_pp)) mov_comportamiento_pp
-        FROM sff_simpson_contrafactual c LEFT JOIN sff_mix_shift m ON m.celda_id = c.celda_id AND m.mes = c.mes
+        FROM sff_mandatory_only_cost c LEFT JOIN sff_mix_shift m ON m.celda_id = c.celda_id AND m.mes = c.mes
         GROUP BY c.celda_id ORDER BY ahorro_usd DESC
     Reading: `ahorro_usd` > 0 → in that cell, predicting the parts with the real weights of
     the month beat predicting the whole (the flat rate); `riesgo_mix_pp` is how much the
-    cell's aggregate rate moves per month by composition alone (Kitagawa) — the quiet Simpson.
+    cell's aggregate rate moves per month by composition alone (Kitagawa).
     """
     by_cell = counterfactual.groupby("celda_id").agg(ahorro_usd=("ahorro_usd", "sum"), pct_gana=("gana_segmentado", "mean"),
                                                       meses=("mes", "nunique"))
@@ -337,7 +339,7 @@ def print_mix_shift_by_cell(counterfactual: pd.DataFrame, decomposition: pd.Data
         by_cell = by_cell.join(mix, how="left")
     total_saving = by_cell["ahorro_usd"].sum()
     winners = by_cell[by_cell["ahorro_usd"] > 0]
-    print(f"[1.2] where segmenting pays: {len(winners)} of {len(by_cell)} cells with positive saving hold "
+    print(f"[1.4] where segmenting pays: {len(winners)} of {len(by_cell)} cells with positive saving hold "
           f"${winners['ahorro_usd'].sum():,.0f}; the {len(by_cell) - len(winners)} others cost ${-by_cell.loc[by_cell['ahorro_usd'] <= 0, 'ahorro_usd'].sum():,.0f} "
           f"(net ${total_saving:,.0f})")
     print("   cell · saving $ · % months segmented wins · mix risk pp (composition) · behaviour pp")
@@ -351,29 +353,48 @@ def print_mix_shift_by_cell(counterfactual: pd.DataFrame, decomposition: pd.Data
 
 
 def run_dimension_analysis(units: pd.DataFrame, series_summary: pd.DataFrame, configuration: Config) -> dict:
-    """Phase 1.2 end to end. Persists decision_eta2, decision_eta2_pairs,
-    simpson_contrafactual, mix_shift_decomposition, timevarying_calibration."""
+    """Phase 1.2 · what separates behaviour, and in which order the mandatory dims collapse.
+    Persists decision_eta2 and decision_eta2_pairs. (Composition and signals: phase 1.4.)"""
     decision, pairs = dimension_separation(series_summary, units, configuration)
-    counterfactual, decomposition = counterfactual_and_decomposition(units, configuration)
-    calibration = timevarying_calibration(units, configuration)
     configuration.write(decision, "decision_eta2")
     configuration.write(pairs, "decision_eta2_pairs")
-    configuration.write(counterfactual, "simpson_contrafactual")
-    configuration.write(decomposition, "mix_shift_decomposition")
-    configuration.write(calibration, "timevarying_calibration")
     print("[1.2] dimension separation (neutral series, weights = support):")
     for _, row in decision.iterrows():
         collapse = f"collapses #{row['orden_colapso']} (loses R² {row['perdida_secuencial']:.3f})" if row["orden_colapso"] else "(annullable extra)"
         print(f"   {row['dimension']:<26} η²={row['eta2_individual']:.3f}  unique={row['contribucion_unica']:.3f}  ω²={row['omega2']:.3f}  {collapse}")
+    explain(configuration,
+            "η² = share of the variance of the series' rates that a dimension explains ALONE (0 = the rate is the same across its values; 1 = it decides the rate).",
+            "'unique' = what is lost if that dimension is removed while the others stay (0 when another dimension carries the same information, e.g. nested levels).",
+            "'collapses #k' = the order in which the ladder drops mandatory dims to find relatives: the ones that separate least fall first, so pooled cohorts stay alike.")
+    return dict(decision_eta2=decision, decision_eta2_pairs=pairs)
+
+
+def run_composition_analysis(units: pd.DataFrame, configuration: Config) -> dict:
+    """Phase 1.4 · composition and signals, AFTER the ladder: how much of the movement of
+    the cells is mix (Kitagawa), what the mandatory-only view would cost in dollars, and
+    the realized rate of every flag and sign. Nothing downstream decides on these: they
+    are the account of composition the business asked for, not a search for cases."""
+    counterfactual, decomposition = counterfactual_and_decomposition(units, configuration)
+    calibration = timevarying_calibration(units, configuration)
+    configuration.write(counterfactual, "mandatory_only_cost")
+    configuration.write(decomposition, "mix_shift_decomposition")
+    configuration.write(calibration, "timevarying_calibration")
     if len(counterfactual):
-        print(f"[1.2] Simpson counterfactual: saving of the segmented method ${counterfactual['ahorro_usd'].sum():,.0f} "
-              f"over {counterfactual['mes'].nunique()} walk-forward months · segmented wins in "
-              f"{counterfactual['gana_segmentado'].mean():.0%} of cell-months")
+        print(f"[1.4] the mandatory-only view (one rate per cell) vs the segmented series, walk-forward over "
+              f"{counterfactual['mes'].nunique()} months: segmenting saves ${counterfactual['ahorro_usd'].sum():,.0f} net · "
+              f"segmented is closer in {counterfactual['gana_segmentado'].mean():.0%} of cell-months")
         print_mix_shift_by_cell(counterfactual, decomposition)
     if len(decomposition):
         composition_share = (decomposition["delta_composicion_pp"].abs().sum()
                              / max((decomposition["delta_composicion_pp"].abs() + decomposition["delta_comportamiento_pp"].abs()).sum(), 1e-9))
-        print(f"[1.2] mix-shift: {composition_share:.0%} of the month-to-month movement of cell rates is composition, not behaviour "
+        print(f"[1.4] composition: {composition_share:.0%} of the month-to-month movement of cell rates is the mix of the pipeline, not behaviour "
               f"(Σ|composición| / (Σ|composición| + Σ|comportamiento|) over every cell-month of the window)")
-    return dict(decision_eta2=decision, decision_eta2_pairs=pairs, simpson_contrafactual=counterfactual,
-                mix_shift_decomposition=decomposition, timevarying_calibration=calibration)
+        explain(configuration,
+                "A cell's rate can move because its people renew differently (behaviour) or because different people fall due this month (composition).",
+                "Kitagawa splits each month's change into the two. A high composition share means the aggregate rate is not a behaviour to forecast:",
+                "it is the mix of the known pipeline applied to the rates of its parts — which is exactly what predicting by series and summing does.")
+    if len(calibration):
+        by_sign = calibration[calibration["tipo"] == "signo"].groupby("nombre").apply(
+            lambda g: float(np.average(g["tasa_realizada"], weights=np.maximum(g["n"], 1))), include_groups=False)
+        print(f"[1.4] signals: realized rate by sign {by_sign.round(3).to_dict()} (the flags carve the risky and the safe customers out of the cohorts)")
+    return dict(mandatory_only_cost=counterfactual, mix_shift_decomposition=decomposition, timevarying_calibration=calibration)

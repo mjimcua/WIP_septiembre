@@ -17,7 +17,7 @@ FEATURE-COVERAGE MATRIX (feature → scenario), kept from v2 and extended:
   extra annulment     → channel mute (same rates on web and tele; tele small)
   mandatory ladder    → NA|A tele neutral small, cell NA has support
   mixed sign          → ONE series with dormant=1 and autorenew=1 (must stay alone)
-  Simpson / mix-shift → NA: product A (.90, weight falling) vs B (.50, weight rising)
+  mix-shift → NA: product A (.90, weight falling) vs B (.50, weight rising)
   seasonality         → EU|A yearly sine, amplitude 5 pp, 3 full cycles
   trend               → EU|B declining .86 → .64 over 44 months (must saturate)
   uplift              → newcust+d40 at 1.5 vs veterans 1.03 / d40 1.10
@@ -93,7 +93,7 @@ def build_raw(seed: int = 7) -> pd.DataFrame:
     # channel mute: same rates on tele, small → extra annulment
     series("EU", "A", "tele", 0, 0, 0, 0, 12, seasonal, flat)
     series("EU", "B", "tele", 0, 0, 0, 0, 10, declining, flat)
-    # NA Simpson: A .90 weight falling, B .50 weight rising
+    # NA mix-shift: A .90 weight falling, B .50 weight rising
     for index, month in enumerate(MONTHS):
         weight_a = max(.4, 1.0 - .014 * index)
         series("NA", "A", "web", 0, 0, 0, 0, int(400 * weight_a), lambda i, m: .90, flat, months=[month])

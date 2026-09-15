@@ -36,7 +36,8 @@ from binomial_reference import support_for_half_width
 from config import Config
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-PROJECTION_ROLE, TRAIN_ROLE, TEST_ROLE = "projection", "train", "test"
+PROJECTION_ROLE, TRAIN_ROLE, TEST_ROLE, PENDING_ROLE = "projection", "train", "test", "pending_close"
+TRUTH_ROLES = (TRAIN_ROLE, TEST_ROLE)
 AUV_PLAUSIBLE_RANGE = (1.0, 10_000.0)          # pipeline / renewed AUV outside this is a data problem
 UPLIFT_ROW_PLAUSIBLE_RANGE = (0.3, 3.0)        # renewed AUV / pipeline AUV per row
 SMALL_PIPELINE_FOR_EXTREME_MONTH = 10          # a 0 % or 100 % month with fewer units than this is sampling
@@ -84,7 +85,7 @@ def dimension_domains(raw: pd.DataFrame, configuration: Config) -> tuple:
     """Per declared dimension: cardinality and empties (profile rows); per dimension × value:
     rows, money, first / last month, and whether it appears or disappears INSIDE the history."""
     period, usd = configuration.period_col, configuration.pipeline_usd_col
-    history = raw[raw[configuration.dataset_role_col] != PROJECTION_ROLE]
+    history = raw[raw[configuration.dataset_role_col].isin(TRUTH_ROLES)]
     first_month, last_month = history[period].min(), history[period].max()
     dims = (configuration.business_mandatory_dims + list(configuration.structural_timevarying_dims)
             + configuration.extra_renovacion + configuration.extra_revalorizacion)
@@ -111,7 +112,7 @@ def measure_coherence(raw: pd.DataFrame, configuration: Config) -> list:
     """Per-row checks on the measures, with counts and money."""
     pipe_u, pipe_usd = configuration.pipeline_units_col, configuration.pipeline_usd_col
     ren_u, ren_usd = configuration.renewed_units_col, configuration.renewed_usd_col
-    history = raw[raw[configuration.dataset_role_col] != PROJECTION_ROLE]
+    history = raw[raw[configuration.dataset_role_col].isin(TRUTH_ROLES)]
     rows = []
     over = history[history[ren_u] > history[pipe_u]]
     rows.append(profile_row("medidas", "filas con renovados > pipeline", len(over), f"${over[pipe_usd].sum():,.0f}"))
@@ -202,7 +203,7 @@ def series_completeness(units: pd.DataFrame, fine_table: pd.DataFrame, configura
     period, role = configuration.period_col, configuration.dataset_role_col
     pipe_u, pipe_usd, ren_u = configuration.pipeline_units_col, configuration.pipeline_usd_col, configuration.renewed_units_col
     real = units[units.get("sintetica", 0) == 0] if "sintetica" in units.columns else units
-    history = real[real[role] != PROJECTION_ROLE].copy()
+    history = real[real[role].isin(TRUTH_ROLES)].copy()
     if history.empty:
         return pd.DataFrame(columns=["fs_id"])
     first_month, last_month = history[period].min(), history[period].max()
@@ -216,10 +217,10 @@ def series_completeness(units: pd.DataFrame, fine_table: pd.DataFrame, configura
     support = history[history[pipe_u] > 0].groupby("fs_id")[pipe_u].median()
     profile["n_mediana"] = profile["fs_id"].map(support).fillna(0.0).round(1)
     profile["tramo_dial"] = profile["n_mediana"].map(lambda n: dial_bucket(n, thresholds))
-    projected = real[real[role] == PROJECTION_ROLE].groupby("fs_id")[pipe_usd].sum()
+    projected = real[real[role].isin((PROJECTION_ROLE, PENDING_ROLE))].groupby("fs_id")[pipe_usd].sum()
     profile["usd_proyectado"] = profile["fs_id"].map(projected).fillna(0.0).round(2)
     # combinations per unit
-    combos = fine_table[fine_table[role] != PROJECTION_ROLE].groupby("fu_id").agg(
+    combos = fine_table[fine_table[role].isin(TRUTH_ROLES)].groupby("fu_id").agg(
         combinaciones=("comb_id", "nunique"), usd_fina=(pipe_usd, "sum"), mayor=(pipe_usd, "max"))
     combos["peso_mayor"] = combos["mayor"] / combos["usd_fina"].replace(0, np.nan)
     per_unit = history[["fs_id", "fu_id", pipe_usd, pipe_u, ren_u]].merge(combos, left_on="fu_id", right_index=True, how="left")

@@ -21,20 +21,24 @@ import sys
 
 import pandas as pd
 
+# The project is a flat folder imported from notebooks and scripts alike: make sure the
+# folder of this file is importable BEFORE importing the sibling modules below (that is
+# why those imports come after this block, not at the top).
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
-from config import Config   # noqa: E402
+from config import Config
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 RULE = "─" * 74
 # logical table → the column(s) that filter it for a series, in order of precedence
 TABLES_BY_SERIES = ["forecast_series_raw_summary", "series_card", "parent_ladder", "support_chain", "decision_support",
                     "fact_fu_gaps", "key_bridge", "forecast_detail", "forecast_bands", "forecast_units_extended"]
-TABLES_BY_ESTIMATION = ["decision_dynamics", "decision_technique", "decision_error_bands", "backtest_holdout",
+TABLES_BY_ESTIMATION = ["pool_reference", "decision_technique", "decision_error_bands", "backtest_holdout",
                         "backtest_predictions"]
-TABLES_BY_CELL = ["simpson_contrafactual", "mix_shift_decomposition"]
+TABLES_BY_SERIES_OPTIONAL = ["decision_estacionalidad"]
+TABLES_BY_CELL = ["mandatory_only_cost", "mix_shift_decomposition"]
 TABLES_BY_UPLIFT_CELL = ["decision_uplift", "uplift_chain"]
 MAX_ROWS_PRINTED = 40
 
@@ -60,14 +64,15 @@ def _locate_in_results(logical_name: str, results: dict):
         "forecast_series_raw_summary": results.get("series_summary"), "series_card": results.get("series_card"),
         "parent_ladder": results.get("parent_ladder"), "key_bridge": results.get("key_bridge"),
         "decision_support": results.get("decisions", {}).get("decision_support"),
-        "decision_dynamics": results.get("decisions", {}).get("decision_dynamics"),
+        "pool_reference": results.get("decisions", {}).get("pool_reference"),
+        "decision_estacionalidad": results.get("decisions", {}).get("decision_estacionalidad"),
         "decision_technique": results.get("decisions", {}).get("decision_technique"),
         "decision_error_bands": results.get("decisions", {}).get("decision_error_bands"),
         "decision_uplift": results.get("decisions", {}).get("decision_uplift"),
         "backtest_holdout": results.get("backtest", {}).get("backtest_holdout"),
         "backtest_predictions": results.get("backtest", {}).get("backtest_long"),
-        "simpson_contrafactual": results.get("dimensions", {}).get("simpson_contrafactual"),
-        "mix_shift_decomposition": results.get("dimensions", {}).get("mix_shift_decomposition"),
+        "mandatory_only_cost": results.get("composition", {}).get("mandatory_only_cost"),
+        "mix_shift_decomposition": results.get("composition", {}).get("mix_shift_decomposition"),
         "forecast_detail": results.get("forecast", {}).get("forecast_detail"),
         "forecast_bands": results.get("forecast", {}).get("forecast_bands"),
         "forecast_units_extended": results.get("forecast", {}).get("forecast_units_extended"),
@@ -91,6 +96,9 @@ def filter_for_series(series_id: str, configuration: Config = None, results: dic
     for name in TABLES_BY_ESTIMATION:
         table = read_table(name, configuration, results)
         filtered[name] = table[table["id_estimacion"] == estimation_id] if len(table) else table
+    for name in TABLES_BY_SERIES_OPTIONAL:
+        table = read_table(name, configuration, results)
+        filtered[name] = table[table["fs_id"] == series_id] if len(table) and "fs_id" in table.columns else table.head(0)
     for name in TABLES_BY_CELL:
         table = read_table(name, configuration, results)
         filtered[name] = table[table["celda_id"] == cell_id] if len(table) and "celda_id" in table.columns else table.head(0)
@@ -120,13 +128,17 @@ def tell(filtered: dict) -> None:
           f"k={card['k']} → z={card['z']} · tasa_estimada {card['tasa_estimada']:.4f} = z·own + (1−z)·parent "
           f"({card['tasa_propia']:.4f} / {card['tasa_pariente'] if pd.notna(card['tasa_pariente']) else float('nan'):.4f}) · "
           f"se_estimacion {card['se_estimacion_pp']:.1f} pp · se_prediccion {card['se_prediccion_pp']:.1f} pp · level {card['nivel_riesgo']}")
-    dynamics = filtered["decision_dynamics"]
-    if len(dynamics):
-        d = dynamics.iloc[0]
-        print(f"[dynamics]  of {keys['id_estimacion']}: {int(d['meses'])} months · n_pool {d['n_pool']:.0f} · phi {d['phi']} "
-              f"(sd observed {d['sd_obs_pp']} pp vs binomial {d['sd_binom_pp']} pp) · gate {d['gate']} · "
-              f"seasonal {int(d['estacional'])} (amp {d['amp_estacional_pp']} pp, {int(d['ciclos_completos'])} cycles, high {d['meses_alto'] or '-'} low {d['meses_bajo'] or '-'}) · "
-              f"trend {int(d['tendencia'])} ({d['pendiente_pp_ano']} pp/yr)")
+    reference = filtered["pool_reference"]
+    if len(reference):
+        d = reference.iloc[0]
+        print(f"[pool]      {keys['id_estimacion']}: {int(d['meses'])} months · n_pool {d['n_pool']:.0f} · rate {d['tasa_pool']} · "
+              f"{'with support' if d['gate'] == 'nivel' else 'under the floor'} · month effects {'yes' if d['estacional'] else 'no'} · trend {int(d['tendencia'])}")
+    benchmark = filtered["decision_estacionalidad"]
+    if len(benchmark):
+        b = benchmark.iloc[0]
+        print(f"[benchmark] in the seasonality benchmark: φ={b['phi']} amplitude {b['amplitud_pp']} pp ({b['mes_alto']}/{b['mes_bajo']}) "
+              f"consistency {b['consistencia_alto']}/{b['consistencia_bajo']} · shape vs level {b['mejora_h1_pct']:+.0f}% h1 / {b['mejora_h6_pct']:+.0f}% h6 · "
+              f"verdict {'SEASONAL' if b['veredicto_estacional'] else b['motivo']} · trend {b['pendiente_pp_anio']} pp/yr")
     technique = filtered["decision_technique"]
     if len(technique):
         for _, t in technique.iterrows():
@@ -134,7 +146,7 @@ def tell(filtered: dict) -> None:
             print(f"[technique]{band} {t['tecnica']} ({t['tecnica_origen']}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units "
                   f"over {int(t['n_predicciones'])} predictions · challenger at {t['retador_err_norm']}")
     else:
-        print("[technique] none judged (series without support: challenger + binomial band by doctrine)")
+        print("[technique] none judged (series without support: challenger + binomial band)")
     bands = filtered["decision_error_bands"]
     if len(bands):
         print("[bands]     h · q_low · q_high (× binomial se of the pool month) · origin")

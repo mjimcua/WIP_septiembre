@@ -25,13 +25,16 @@ import sys
 
 import pandas as pd
 
+# The project is a flat folder imported from notebooks and scripts alike: make sure the
+# folder of this file is importable BEFORE importing the sibling modules below (that is
+# why those imports come after this block, not at the top).
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
-from audit_series import filter_for_series, read_table, tell    # noqa: E402
-from config import Config, hash_key                             # noqa: E402
-from diagnostics_plots import series_sheet, sheet_summary        # noqa: E402
+from audit_series import filter_for_series, read_table, tell
+from config import Config, hash_key
+from diagnostics_plots import series_sheet, sheet_summary
 
 KEY_KINDS = ("fs_key", "estimacion_key", "celda_key", "uplift_cell_key", "fu_key", "fu_comb_key")
 
@@ -93,7 +96,7 @@ def sheet(key, configuration: Config = None, results: dict = None, figure: bool 
     keys = resolve_key(key, configuration, results)
     tables = filter_for_series(keys["fs_id"], configuration, results)
     card = tables["series_card"].iloc[0]
-    dynamics = tables["decision_dynamics"]
+    dynamics = tables["pool_reference"]
     technique = tables["decision_technique"]
     holdout = tables["backtest_holdout"]
     holdout_h1 = holdout[holdout["h"] == 1].sort_values("mes_objetivo") if len(holdout) else holdout
@@ -105,5 +108,5 @@ def sheet(key, configuration: Config = None, results: dict = None, figure: bool 
     if verbose:
         tell(tables)
         print(summary)
-    path = series_sheet(keys["fs_id"], configuration, results, output_folder) if figure else None
+    path = series_sheet(keys["fs_id"], configuration, results, output_folder, verbose=verbose) if figure else None
     return dict(keys=keys, summary=summary, tables=tables, figure=path)

@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 TESTS = ["test_config.py", "test_raw_data_validation.py", "test_phase1.py", "test_phase2_3.py",
-         "test_phase4_5.py", "test_pipeline.py"]
+         "test_phase4_5.py", "test_pipeline.py", "test_engineering.py", "test_statistics.py"]
 
 if __name__ == "__main__":
     for test_file in TESTS:

@@ -26,16 +26,19 @@ import sys
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt                        # noqa: E402
-import numpy as np                                    # noqa: E402
-import pandas as pd                                   # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
+# The project is a flat folder imported from notebooks and scripts alike: make sure the
+# folder of this file is importable BEFORE importing the sibling modules below (that is
+# why those imports come after this block, not at the top).
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
-from audit_series import read_table                   # noqa: E402
-from config import Config                             # noqa: E402
+from audit_series import read_table
+from config import Config
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PALETTE = ["#2E7D7D", "#3B8BC8", "#E8B84F"] + [matplotlib.colormaps["tab10"](i) for i in range(10)]
@@ -55,7 +58,7 @@ def top_series(series_card: pd.DataFrame, top: int, by: str, min_history_months:
 def monthly_of(units: pd.DataFrame, series_id: str, configuration: Config) -> pd.DataFrame:
     """The real history months of one series: rate and pipeline units, indexed by period."""
     period = configuration.period_col
-    rows = units[(units["fs_id"] == series_id) & (units["sintetica"] == 0) & (units[configuration.dataset_role_col] != "projection")]
+    rows = units[(units["fs_id"] == series_id) & (units["sintetica"] == 0) & (units[configuration.dataset_role_col].isin(("train", "test")))]
     monthly = rows.groupby(period).agg(pipe=(configuration.pipeline_units_col, "sum"), ren=(configuration.renewed_units_col, "sum")).sort_index()
     monthly["rate"] = np.where(monthly["pipe"] > 0, monthly["ren"] / monthly["pipe"].replace(0, np.nan), np.nan)
     monthly.index = pd.PeriodIndex(monthly.index, freq="M")
@@ -73,9 +76,8 @@ def month_ticks(axis, periods: pd.PeriodIndex) -> None:
 
 def label_of(row: pd.Series, dynamics: pd.Series, technique: pd.Series) -> str:
     """One legend line: id · n · φ · season · slope · technique."""
-    season = {0: "no season", 1: "season?", 2: "SEASON"}.get(int(dynamics.get("estacional", 0)), "")
-    return (f"{row['fs_id'][:52]} · n={row['n_propio']:.0f} · φ={dynamics.get('phi', float('nan'))} · {season} "
-            f"(amp {dynamics.get('amp_estacional_pp', 0)}pp) · slope {dynamics.get('pendiente_pp_ano', 0)}pp/yr · "
+    season = "month effects" if int(dynamics.get("estacional", 0) or 0) else "level"
+    return (f"{row['fs_id'][:52]} · n={row['n_propio']:.0f} · pool n={dynamics.get('n_pool', float('nan'))} · {season} · "
             f"{technique.get('tecnica', '-')} {technique.get('tecnica_origen', '')}")
 
 
@@ -110,27 +112,28 @@ def plot_rates_and_pipeline(monthlies: dict, labels: dict, holdout_start, output
 
 
 def plot_seasonal_profiles(top: pd.DataFrame, dynamics_by_id: dict, output_folder: str) -> str:
-    """Figure 3: the seasonal index by calendar month of the series with a profile."""
+    """Figure 3: the benchmark view for the top series — month effects only where the
+    benchmark found them; otherwise a note that the rate has no calendar shape."""
     figure, axis = plt.subplots(figsize=(FIGURE_WIDTH, 5.5))
     drawn = 0
     for index, (_, row) in enumerate(top.iterrows()):
-        dynamics = dynamics_by_id.get(row["id_estimacion"], {})
-        profile_text = dynamics.get("perfil_estacional", "") or ""
-        if not profile_text:
+        effects_text = row.get("efectos_mes", "") if isinstance(row, pd.Series) else ""
+        if not isinstance(effects_text, str) or not effects_text:
             continue
-        profile = {int(k): float(v) for k, v in (item.split(":") for item in profile_text.split("|"))}
-        months = sorted(profile)
-        style = "-" if int(dynamics.get("estacional", 0)) == 2 else ("--" if int(dynamics.get("estacional", 0)) == 1 else ":")
-        axis.plot(months, [100 * (profile[m] - 1) for m in months], style, color=PALETTE[index % len(PALETTE)], linewidth=2.2, marker="o",
-                  label=f"{row['fs_id'][:40]} · φ={dynamics.get('phi')} · bound ±{dynamics.get('cota_pp')}pp · cycles {dynamics.get('ciclos_completos')}")
+        effects = {int(k): float(v) for k, v in (item.split(":") for item in effects_text.split("|"))}
+        months = sorted(effects)
+        axis.plot(months, [effects[m] for m in months], "-o", color=PALETTE[index % len(PALETTE)], linewidth=2.2,
+                  label=f"{row['fs_id'][:40]} · amplitude {row.get('amplitud_pp', float('nan'))} pp · {'SEASONAL' if row.get('veredicto_estacional', 0) else 'not material'}")
         drawn += 1
     axis.axhline(0, color="black", linewidth=0.8)
     axis.set_xticks(range(1, 13))
     axis.set_xticklabels(list(MONTH_LETTERS), fontsize=11)
-    axis.set_ylabel("% above / below the series' mean rate", fontsize=12)
-    axis.set_title("seasonal profile by calendar month (detrended) · solid = firm (≥2 cycles), dashed = 1 cycle, dotted = not seasonal", fontsize=12, loc="left")
+    axis.set_ylabel("month effect on the rate, pp", fontsize=12)
+    axis.set_title("month effects from the seasonality benchmark (regression with month dummies, weighted by n)", fontsize=12, loc="left")
     if drawn:
         axis.legend(fontsize=8, framealpha=0.9)
+    else:
+        axis.text(0.5, 0.5, "no benchmark rows for these series: the rate is predicted from its level", ha="center", fontsize=11)
     figure.tight_layout()
     path = os.path.join(output_folder, "3_season.png")
     figure.savefig(path, dpi=110)
@@ -174,7 +177,7 @@ def run_series_diagnostics(configuration: Config = None, results: dict = None, t
                            min_history_months: int = 24, output_folder: str = None) -> list:
     """Pick the top series, print their diagnostics, save the four figures. Returns the paths."""
     card = read_table("series_card", configuration, results)
-    dynamics = read_table("decision_dynamics", configuration, results)
+    dynamics = read_table("pool_reference", configuration, results)
     technique = read_table("decision_technique", configuration, results)
     holdout = read_table("backtest_holdout", configuration, results)
     units = results["units"] if results is not None and "units" in results else None
@@ -192,20 +195,21 @@ def run_series_diagnostics(configuration: Config = None, results: dict = None, t
     folder = output_folder or os.path.join(configuration.outdir if configuration else ".", "diagnostics")
     os.makedirs(folder, exist_ok=True)
     print(f"[diag] top {len(chosen)} series by {by} (≥ {min_history_months} history months)")
-    print("   series · $ projected · months · n · id_estimacion · φ · gate · season(amp) · slope · technique · hold-out |err| h=1")
+    print("   series · $ projected · months · n · id_estimacion · pool n · month effects · technique · hold-out |err| h=1")
     monthlies, labels = {}, {}
     for _, row in chosen.iterrows():
         d, t = dynamics_by_id.get(row["id_estimacion"], {}), technique_by_id.get(row["id_estimacion"], {})
         block = holdout[(holdout["id_estimacion"] == row["id_estimacion"]) & (holdout["h"] == 1)] if len(holdout) else pd.DataFrame()
         err = f"{block['err_pp'].abs().mean():.1f}pp" if len(block) else "-"
         print(f"   {row['fs_id'][:58]:<58} ${row['usd_proyectado']:>11,.0f} {int(row['meses_historia']):>3}m n={row['n_propio']:>6.0f} "
-              f"→ {str(row['id_estimacion'])[:36]:<36} φ={d.get('phi', '-')} {d.get('gate', '-')} est={d.get('estacional', '-')}"
-              f"({d.get('amp_estacional_pp', '-')}pp) slope={d.get('pendiente_pp_ano', '-')} {t.get('tecnica', '-')}/{t.get('tecnica_origen', '')} {err}")
+              f"→ {str(row['id_estimacion'])[:36]:<36} pool n={d.get('n_pool', '-')} effects={d.get('estacional', '-')} {t.get('tecnica', '-')}/{t.get('tecnica_origen', '')} {err}")
         monthlies[row["fs_id"]] = monthly_of(units, row["fs_id"], configuration)
         labels[row["fs_id"]] = label_of(row, d, t)
     holdout_start = pd.Period(holdout["mes_objetivo"].min(), freq="M") if len(holdout) else None
     paths = plot_rates_and_pipeline(monthlies, labels, holdout_start, folder)
-    paths.append(plot_seasonal_profiles(chosen, dynamics_by_id, folder))
+    benchmark = read_table("decision_estacionalidad", configuration, results)
+    top_with_benchmark = chosen.merge(benchmark, on="fs_id", how="left", suffixes=("", "_bench")) if len(benchmark) else chosen
+    paths.append(plot_seasonal_profiles(top_with_benchmark, dynamics_by_id, folder))
     paths.append(plot_holdout(chosen, holdout, folder))
     print(f"[diag] figures in {folder}: " + ", ".join(os.path.basename(p) for p in paths))
     return paths
@@ -221,13 +225,17 @@ def binomial_band(rates: np.ndarray, units: np.ndarray, z: float = 1.645) -> tup
     return np.clip(rates - z * se, 0, 1), np.clip(rates + z * se, 0, 1)
 
 
-def series_sheet(series_id: str, configuration: Config = None, results: dict = None, output_folder: str = None) -> str:
+def series_sheet(series_id: str, configuration: Config = None, results: dict = None, output_folder: str = None,
+                 verbose: bool = True) -> str:
     """ONE figure with everything the numbers say about one series, next to the series itself.
 
-    Panels: (1) monthly rate with its binomial band, the pooled mean, the last-12-month
-    trend line, the level change (vertical line), hold-out shaded; (2) pipeline units by
-    month; (3) seasonal profile of the RATE vs of the UNITS (where the season lives);
-    (4) hold-out real vs predicted with band. A text box carries the diagnostics in words.
+    Six panels: (1) monthly rate with its binomial band, the pooled mean and the
+    last-12-month trend, hold-out shaded; (2) pipeline units by month (the season of the
+    volume); (3) month × year panel of standardized residuals (the benchmark's view);
+    (4) hold-out real vs predicted with band; (5) the composition of the series' cell,
+    month by month (Kitagawa: behaviour vs composition); (6) the forecast of the series,
+    expected $ by month with its band, coloured by pipeline origin. A text box carries
+    the story in words.
     Returns the PNG path. Prints the summary too.
     """
     card = read_table("series_card", configuration, results)
@@ -235,7 +243,7 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
     if row.empty:
         raise KeyError(f"series '{series_id}' not in series_card")
     row = row.iloc[0]
-    dynamics = read_table("decision_dynamics", configuration, results)
+    dynamics = read_table("pool_reference", configuration, results)
     dynamics = dynamics[dynamics["id_estimacion"] == row["id_estimacion"]]
     d = dynamics.iloc[0] if len(dynamics) else pd.Series(dtype=object)
     technique = read_table("decision_technique", configuration, results)
@@ -252,8 +260,9 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
     x = np.arange(len(valid))
     rates, pipe = valid["rate"].to_numpy(dtype=float), valid["pipe"].to_numpy(dtype=float)
 
-    figure, axes = plt.subplots(2, 2, figsize=(FIGURE_WIDTH, 10), gridspec_kw=dict(height_ratios=[1.3, 1]))
+    figure, axes = plt.subplots(3, 2, figsize=(FIGURE_WIDTH, 15), gridspec_kw=dict(height_ratios=[1.3, 1, 1]))
     ax_rate, ax_units, ax_season, ax_holdout = axes[0, 0], axes[1, 0], axes[0, 1], axes[1, 1]
+    ax_mix, ax_forecast = axes[2, 0], axes[2, 1]
     # (1) rate with binomial band, mean, recent trend, level change
     low, high = binomial_band(rates, pipe, configuration.z if configuration else 1.645)
     ax_rate.fill_between(x, low, high, color="#3B8BC8", alpha=0.12, label="binomial band of each month (sampling only)")
@@ -265,14 +274,6 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
         coefficients = np.polyfit(recent_x, rates[-12:], 1)
         ax_rate.plot(recent_x, np.polyval(coefficients, recent_x), color="#C0392B", linewidth=2,
                      label=f"last 12 months trend {100 * 12 * coefficients[0]:+.1f} pp/yr")
-    change_month = d.get("cambio_nivel_mes", "") if len(d) else ""
-    if change_month:
-        try:
-            cut = list(periods.astype(str)).index(change_month)
-            ax_rate.axvline(cut - 0.5, color="black", linestyle=":", linewidth=1.5,
-                            label=f"level change {change_month}: {d['cambio_nivel_pp']:+.1f} pp ({d['cambio_nivel_fuerza']:.1f} binomial units)")
-        except ValueError:
-            pass
     if len(holdout):
         first = pd.Period(holdout["mes_objetivo"].min(), freq="M")
         if first in set(periods):
@@ -285,22 +286,18 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
     ax_units.bar(x, pipe, color="#3B8BC8", alpha=0.8)
     month_ticks(ax_units, periods)
     ax_units.set_ylabel("pipeline units", fontsize=11)
-    ax_units.set_title(f"pipeline units by month · volume seasonality {d.get('amp_volumen_pct', float('nan'))} % of mean · "
-                       f"corr(units, rate) {d.get('corr_unidades_tasa', float('nan'))}", fontsize=11, loc="left")
-    # (3) seasonal profile: rate vs units
+    ax_units.set_title("pipeline units by month (the season of the VOLUME lives here)", fontsize=11, loc="left")
+    # (3) month × year panel of standardized residuals after trend (the benchmark's view)
     if len(valid) >= 13:
-        by_month_rate = pd.Series(rates, index=periods.month).groupby(level=0).mean()
-        by_month_units = pd.Series(pipe, index=periods.month).groupby(level=0).mean()
-        ax_season.plot(by_month_rate.index, 100 * (by_month_rate / rates.mean() - 1), "-o", color="#2E7D7D", linewidth=2.4,
-                       label=f"RATE by calendar month (amp {d.get('amp_estacional_pp', '-')} pp, seasonal={d.get('estacional', '-')}, φ={d.get('phi', '-')})")
-        ax_season.plot(by_month_units.index, 100 * (by_month_units / pipe.mean() - 1), "-s", color="#3B8BC8", linewidth=2.4,
-                       label=f"UNITS by calendar month (amp {d.get('amp_volumen_pct', '-')} %)")
-        bound = float(d.get("cota_pp", 0) or 0)
-        ax_season.axhspan(-2 * bound / max(pooled, 0.01), 2 * bound / max(pooled, 0.01), color="grey", alpha=0.12, label="2× binomial bound of the rate")
+        from analysis_seasonality_benchmark import month_year_panel
+        panel, consistency = month_year_panel(valid)
+        for year, block in panel.groupby("anio"):
+            ax_season.plot(block["mes"], block["z"], "-o", linewidth=1.8, markersize=4, label=str(year))
+        ax_season.axhspan(-2, 2, color="grey", alpha=0.12, label="±2 sampling errors")
+        ax_season.set_ylabel("z = (rate − trend) / binomial se", fontsize=11)
     ax_season.axhline(0, color="black", linewidth=0.8)
     ax_season.set_xticks(range(1, 13)); ax_season.set_xticklabels(list(MONTH_LETTERS), fontsize=11)
-    ax_season.set_ylabel("% above / below own mean", fontsize=11)
-    ax_season.set_title("where the season lives: in the rate or in the volume?", fontsize=12, loc="left")
+    ax_season.set_title("month × year: is the same month high (or low) every year? (real season = same sign every year)", fontsize=11, loc="left")
     ax_season.legend(fontsize=8, framealpha=0.9)
     # (4) hold-out
     if len(holdout):
@@ -316,37 +313,75 @@ def series_sheet(series_id: str, configuration: Config = None, results: dict = N
     else:
         ax_holdout.text(0.5, 0.5, "no hold-out (no backtest for this id: under the floor or not run)", ha="center", fontsize=11)
         ax_holdout.set_axis_off()
+    # (5) the composition of the series' cell: behaviour vs composition, month by month (Kitagawa)
+    mix = read_table("mix_shift_decomposition", configuration, results)
+    cell_mix = mix[mix["celda_id"] == row["celda_id"]].sort_values("mes") if len(mix) else mix
+    if len(cell_mix):
+        mx = np.arange(len(cell_mix))
+        ax_mix.bar(mx, cell_mix["delta_comportamiento_pp"], color="#2E7D7D", alpha=0.85, label="behaviour (people renewing differently)")
+        ax_mix.bar(mx, cell_mix["delta_composicion_pp"], bottom=np.where(np.sign(cell_mix["delta_composicion_pp"]) == np.sign(cell_mix["delta_comportamiento_pp"]), cell_mix["delta_comportamiento_pp"], 0),
+                   color="#E8B84F", alpha=0.85, label="composition (the mix of who falls due)")
+        ax_mix.plot(mx, cell_mix["delta_agregado_pp"], "-o", color="black", linewidth=1.6, markersize=4, label="change of the cell's rate")
+        ax_mix.set_xticks(mx)
+        ax_mix.set_xticklabels([MONTH_LETTERS[int(m[5:7]) - 1] for m in cell_mix["mes"]], fontsize=10)
+        share = cell_mix["delta_composicion_pp"].abs().sum() / max((cell_mix["delta_composicion_pp"].abs() + cell_mix["delta_comportamiento_pp"].abs()).sum(), 1e-9)
+        ax_mix.set_title(f"cell {row['celda_id'][:45]} · month-to-month change of its rate split by Kitagawa · composition {share:.0%}", fontsize=11, loc="left")
+        ax_mix.axhline(0, color="black", linewidth=0.8)
+        ax_mix.set_ylabel("pp", fontsize=11)
+        ax_mix.legend(fontsize=8, framealpha=0.9)
+    else:
+        ax_mix.text(0.5, 0.5, "no composition rows for this cell", ha="center", fontsize=11)
+        ax_mix.set_axis_off()
+    # (6) the forecast of the series: expected $ by month with its band, coloured by pipeline origin
+    detail = read_table("forecast_detail", configuration, results)
+    detail = detail[detail["fs_id"] == series_id] if len(detail) else detail
+    fbands = read_table("forecast_bands", configuration, results)
+    if len(detail):
+        joined = detail.merge(fbands[["fu_comb_key", "banda_low_usd", "banda_high_usd"]], on="fu_comb_key", how="left") if len(fbands) else detail.assign(banda_low_usd=0.0, banda_high_usd=0.0)
+        period_column = [c for c in ("period", "periodo") if c in joined.columns][0]
+        monthly = joined.groupby([period_column, "origen_pipeline"], as_index=False).agg(esperado=("esperado_usd", "sum"), low=("banda_low_usd", "sum"), high=("banda_high_usd", "sum"))
+        months_f = sorted(monthly[period_column].astype(str).unique())
+        colour_of = {"real": "#2E7D7D", "proyectada": "#3B8BC8", "simulada": "#E8B84F"}
+        bottom = np.zeros(len(months_f))
+        for origin in ("real", "proyectada", "simulada"):
+            block = monthly[monthly["origen_pipeline"] == origin].set_index(monthly[monthly["origen_pipeline"] == origin][period_column].astype(str))
+            values = np.array([float(block["esperado"].get(m, 0.0)) for m in months_f])
+            if values.sum() > 0:
+                ax_forecast.bar(np.arange(len(months_f)), values, bottom=bottom, color=colour_of[origin], alpha=0.85, label=f"pipeline {origin}")
+                bottom = bottom + values
+        totals = monthly.groupby(monthly[period_column].astype(str)).agg(esperado=("esperado", "sum"), low=("low", "sum"), high=("high", "sum")).reindex(months_f)
+        ax_forecast.errorbar(np.arange(len(months_f)), totals["esperado"], yerr=[-totals["low"].fillna(0), totals["high"].fillna(0)], fmt="none", ecolor="black", capsize=3, label="band")
+        ax_forecast.set_xticks(np.arange(len(months_f)))
+        ax_forecast.set_xticklabels([MONTH_LETTERS[int(m[5:7]) - 1] + ("\n" + m[:4] if m[5:7] == "01" or m == months_f[0] else "") for m in months_f], fontsize=9)
+        ax_forecast.set_ylabel("expected renewed $", fontsize=11)
+        ax_forecast.set_title(f"forecast of the series · ${totals['esperado'].sum():,.0f} over {len(months_f)} months · technique {detail['tecnica'].iloc[0]}", fontsize=11, loc="left")
+        ax_forecast.legend(fontsize=8, framealpha=0.9)
+    else:
+        ax_forecast.text(0.5, 0.5, "no forecast rows (nothing to predict for this series)", ha="center", fontsize=11)
+        ax_forecast.set_axis_off()
     summary = sheet_summary(row, d, t, holdout)
     figure.text(0.01, 0.005, summary, fontsize=9, family="monospace", va="bottom")
-    figure.tight_layout(rect=(0, 0.09, 1, 1))
+    figure.tight_layout(rect=(0, 0.06, 1, 1))
     folder = output_folder or os.path.join(configuration.outdir if configuration else ".", "diagnostics")
     os.makedirs(folder, exist_ok=True)
     safe = "".join(c if c.isalnum() else "_" for c in series_id)[:80]
     path = os.path.join(folder, f"sheet_{safe}.png")
     figure.savefig(path, dpi=110)
     plt.close(figure)
-    print(summary)
+    if verbose:
+        print(summary)
     return path
 
 
 def sheet_summary(row: pd.Series, d: pd.Series, t: pd.Series, holdout: pd.DataFrame) -> str:
     """The diagnostics of one series in plain words (the text box of the sheet)."""
-    if not len(d):
-        return f"{row['fs_id']}: no dynamics (under the floor or no history). Level {row['nivel_riesgo']}."
-    season = {0: "not seasonal", 1: "seasonal? (1 cycle only)", 2: f"SEASONAL (firm, {int(d['ciclos_completos'])} cycles; high {d['meses_alto'] or '-'}, low {d['meses_bajo'] or '-'})"}[int(d["estacional"])]
-    trend = {-1: "declining", 0: "no trend", 1: "rising"}[int(d["tendencia"])]
-    engine = "φ≈1: the rate only samples" if d["phi"] < 1.5 else f"φ={d['phi']}: an engine moves it beyond sampling"
-    regime = (f"level change in {d['cambio_nivel_mes']}: {d['cambio_nivel_pp']:+.1f} pp ({d['cambio_nivel_fuerza']:.1f} binomial units"
-              f"{', a REGIME' if d['cambio_nivel_fuerza'] >= 3 else ', noise'})") if d["cambio_nivel_mes"] else "no level change found"
-    volume = (f"volume season {d['amp_volumen_pct']} % of mean units, corr(units, rate) {d['corr_unidades_tasa']:+.2f}"
-              if pd.notna(d.get("amp_volumen_pct")) else "volume season n/a")
     lines = [
         f"SERIES {row['fs_id']} · estimated with {row['id_estimacion']} (rung {int(row['peldano'])}, n_efectivo {row['n_efectivo']:.0f}) · level {row['nivel_riesgo']}",
-        f"RATE   {row['tasa_estimada']:.3f} · se_estimacion {row['se_estimacion_pp']:.1f} pp · se_prediccion {row['se_prediccion_pp']:.1f} pp · {engine}",
-        f"SHAPE  {season} (amp {d['amp_estacional_pp']} pp vs bound {d['cota_pp']} pp) · {trend} ({d['pendiente_pp_ano']} pp/yr whole history, "
-        f"{d['pendiente_12m_pp_ano']} pp/yr last 12 months) · {regime}",
-        f"VOLUME {volume}",
+        f"RATE   {row['tasa_estimada']:.3f} · se_estimacion {row['se_estimacion_pp']:.1f} pp · se_prediccion {row['se_prediccion_pp']:.1f} pp",
     ]
+    if len(d):
+        lines.append(f"POOL   {int(d['meses'])} months · n_pool {d['n_pool']:.0f} · rate {d['tasa_pool']} · "
+                     f"{'with support' if d['gate'] == 'nivel' else 'under the floor'} · month effects {'yes' if d['estacional'] else 'no (level only)'}")
     if len(t):
         lines.append(f"TECHN. {t['tecnica']} ({t['tecnica_origen']}, band {t.get('tramo_h', '-')}) · mean |error| {t['err_pp_medio']} pp = {t['err_norm_medio']} binomial units · challenger at {t['retador_err_norm']}"
                      + (f" · hold-out h=1 |error| {holdout['err_pp'].abs().mean():.1f} pp, bias {holdout['err_pp'].mean():+.1f} pp, {holdout['dentro_banda'].mean():.0%} in band" if len(holdout) else ""))
@@ -367,30 +402,26 @@ def _units_frame(configuration, results):
 
 
 def pick_showcase_series(configuration: Config = None, results: dict = None, min_history_months: int = 24) -> dict:
-    """Three series to explain the three complexities: the most seasonal, the most trending
-    (last 12 months), the biggest regime change — each the one with most money among the
-    candidates with support. Plus the biggest mix-shift cell's biggest series."""
+    """Series to explain with: the benchmark's seasonal series (if any), the benchmark's
+    biggest series, the most trending one, and the biggest series of the cell with the
+    most mix-shift."""
     card = read_table("series_card", configuration, results)
-    dynamics = read_table("decision_dynamics", configuration, results)
-    joined = card.merge(dynamics, on="id_estimacion", how="inner")
-    joined = joined[(joined["ruta"] == "trainable") & (joined["meses_historia"] >= min_history_months) & (joined["gate"] != "soporte")]
+    benchmark = read_table("decision_estacionalidad", configuration, results)
     picks = {}
-
-    def first_unused(frame):
-        for _, candidate in frame.iterrows():
+    if len(benchmark):
+        seasonal = benchmark[benchmark["veredicto_estacional"] == 1].sort_values("usd_proyectado", ascending=False)
+        if len(seasonal):
+            picks["estacional"] = seasonal.iloc[0]["fs_id"]
+        biggest = benchmark.sort_values("usd_proyectado", ascending=False)
+        for _, candidate in biggest.iterrows():
             if candidate["fs_id"] not in picks.values():
-                return candidate["fs_id"]
-        return None
-    seasonal = joined[joined["estacional"] == 2].sort_values(["amp_estacional_pp", "usd_proyectado"], ascending=False)
-    if len(seasonal):
-        picks["estacional"] = first_unused(seasonal)
-    trending = (joined[(joined["phi"] > 1.5) & (joined["estacional"] != 2)].assign(a=lambda f: f["pendiente_12m_pp_ano"].abs())
-                .sort_values(["a", "usd_proyectado"], ascending=False))
-    if len(trending):
-        picks["tendencia"] = first_unused(trending)
-    regime = joined[joined["cambio_nivel_fuerza"] >= 3].sort_values(["cambio_nivel_fuerza", "usd_proyectado"], ascending=False)
-    if len(regime):
-        picks["cambio_de_nivel"] = first_unused(regime)
+                picks["mayor_del_benchmark"] = candidate["fs_id"]
+                break
+        trending = benchmark[benchmark["veredicto_tendencia"] != 0].sort_values("usd_proyectado", ascending=False)
+        for _, candidate in trending.iterrows():
+            if candidate["fs_id"] not in picks.values():
+                picks["tendencia"] = candidate["fs_id"]
+                break
     mix = read_table("mix_shift_decomposition", configuration, results)
     if len(mix):
         worst_cell = mix.groupby("celda_id")["delta_composicion_pp"].apply(lambda s: s.abs().mean()).idxmax()
@@ -429,7 +460,7 @@ def guess_game(series_id: str, months_hidden: int = 6, configuration: Config = N
     technique = technique[technique["id_estimacion"] == row["id_estimacion"]]
     champion = technique.iloc[0]["tecnica"] if len(technique) else "T3_ma3"
     challenger = configuration.challenger_technique if configuration else "T2_mean"
-    dynamics = read_table("decision_dynamics", configuration, results)
+    dynamics = read_table("pool_reference", configuration, results)
     dynamics = dynamics[dynamics["id_estimacion"] == row["id_estimacion"]]
     labels = dict(estacional=int(dynamics.iloc[0]["estacional"]), tendencia=int(dynamics.iloc[0]["tendencia"])) if len(dynamics) else {}
     month_numbers = month_numbers_of(periods)

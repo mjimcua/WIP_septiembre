@@ -23,18 +23,19 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from checks import CheckRecorder                                                   # noqa: E402
-from test_fixtures import ladder_config, phase_0_units, quiet                      # noqa: E402
-import binomial_reference as ref                                                   # noqa: E402
-import run_rate_series                                                             # noqa: E402
-import analysis_dimensions                                                         # noqa: E402
-import run_support_ladder                                                          # noqa: E402
-import analysis_dynamics                                                           # noqa: E402
-import analysis_backtest                                                           # noqa: E402
-import techniques                                                                  # noqa: E402
+from checks import CheckRecorder
+from test_fixtures import ladder_config, phase_0_units, quiet
+import binomial_reference as ref
+import run_rate_series
+import analysis_dimensions
+import run_support_ladder
+import analysis_seasonality_benchmark as benchmark_module
+import analysis_backtest
+import techniques
 
 RECORDER = CheckRecorder()
 
@@ -45,8 +46,11 @@ def run_to_dynamics(configuration):
         units, summary = run_rate_series.build_rate_series(labeled, configuration)
         dims = analysis_dimensions.run_dimension_analysis(units, summary, configuration)
         estimates, card, decision, ladder = run_support_ladder.run_support_ladder(units, summary, dims["decision_eta2"], configuration)
-        dynamics, series = analysis_dynamics.run_dynamics_analysis(units, decision, ladder, configuration)
-    return dict(units=units, decision=decision, ladder=ladder, dynamics=dynamics, series=series)
+        fine, _ = phase_0_units(configuration)
+        bench = benchmark_module.run_seasonality_benchmark(card, units, fine, configuration)
+        series = analysis_backtest.monthly_series_by_estimation_id(units, decision, ladder, configuration)
+        dynamics = analysis_backtest.build_pool_reference(series, bench["decision_estacionalidad"], configuration)
+    return dict(units=units, decision=decision, ladder=ladder, dynamics=dynamics, series=series, bench=bench, card=card)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -69,50 +73,56 @@ def test_binomial_reference() -> None:
 
 
 def test_dynamics() -> None:
-    RECORDER.start_block("2 · diagnose_dynamics")
+    RECORDER.start_block("2 · seasonality benchmark on big series")
     with tempfile.TemporaryDirectory() as folder:
-        configuration = ladder_config(folder, seasonal_series=True, trend_series=True)
+        configuration = ladder_config(folder, seasonal_series=True, trend_series=True, benchmark_group_dims=["region"],
+                                      benchmark_min_support=100, benchmark_short_months=20)
         results = run_to_dynamics(configuration)
-        dynamics = results["dynamics"].set_index("id_estimacion")
-        RECORDER.check(dynamics.loc["NA|0|0|web", "gate"] == "estacional" and dynamics.loc["NA|0|0|web", "estacional"] == 2,
-                       "a seasonal series with 2 full cycles is 'estacional' (firm)")
-        RECORDER.check(dynamics.loc["NA|0|0|web", "phi"] > 3, "…and its φ says there is an engine")
-        RECORDER.check(dynamics.loc["NA|0|0|tele", "gate"] == "tendencia" and dynamics.loc["NA|0|0|tele", "tendencia"] == -1,
-                       "a declining series is 'tendencia' with direction −1")
-        RECORDER.check(dynamics.loc["NA|0|0|tele", "horizonte_max_tendencia"] > 0, "…with a horizon cap for the trend")
-        RECORDER.check(dynamics.loc["EU|0|0|web", "gate"] == "apto_promedio" and abs(dynamics.loc["EU|0|0|web", "phi"] - 1) < 1.0,
-                       "a flat big series is 'apto_promedio' with φ ≈ 1")
-        RECORDER.check(dynamics.loc["EU|1|1|web", "gate"] == "soporte", "a series under the floor is gated by 'soporte'")
-        profile = dict(item.split(":") for item in dynamics.loc["NA|0|0|web", "perfil_estacional"].split("|"))
-        RECORDER.check(float(profile["4"]) > 1.05 and float(profile["10"]) < 0.95,
-                       "the seasonal profile peaks in April and troughs in October (sine from January)")
+        decision = results["bench"]["decision_estacionalidad"].set_index("fs_id")
+        RECORDER.check(set(decision.index) >= {"NA|0|0|web", "NA|0|0|tele", "EU|0|0|web"},
+                       "the benchmark takes the big neutral series (≥ min support in every closed month)")
+        RECORDER.check("EU|1|0|web" not in decision.index and "EU|0|0|tele" not in decision.index,
+                       "signed and small series stay out of the benchmark")
+        seasonal = decision.loc["NA|0|0|web"]
+        RECORDER.check(seasonal["veredicto_estacional"] == 1 and seasonal["amplitud_pp"] > 10 and seasonal["consistencia_alto"] >= 0.67
+                       and seasonal["mejora_h6_pct"] > 10, f"the seasonal series is declared seasonal (amplitude {seasonal['amplitud_pp']} pp, shape improves h=6 by {seasonal['mejora_h6_pct']:.0f}%)")
+        RECORDER.check(seasonal["phi"] > 3, "…and its φ after the trend says it moves beyond sampling")
+        flat = decision.loc["EU|0|0|web"]
+        RECORDER.check(flat["veredicto_estacional"] == 0 and flat["phi"] < 2, "a flat big series is not seasonal and φ ≈ 1")
+        trending = decision.loc["NA|0|0|tele"]
+        RECORDER.check(trending["veredicto_tendencia"] == -1 and trending["pendiente_pp_anio"] < -3, "the declining series gets a trend verdict of −1")
+        RECORDER.check(trending["veredicto_estacional"] == 0, "…and is not declared seasonal (the trend is removed before the month effects)")
+        panel = results["bench"]["bench_panel"]
+        RECORDER.check(set(panel.columns) >= {"fs_id", "mes", "anio", "z"} and panel["fs_id"].nunique() == len(decision),
+                       "the month × year panel has one z per series × month × year")
+        reference = results["dynamics"].set_index("id_estimacion")
+        RECORDER.check(reference.loc["NA|0|0|web", "estacional"] == 1 and reference.loc["EU|0|0|web", "estacional"] == 0,
+                       "the pool reference carries the benchmark's verdict per estimation id")
+        RECORDER.check(reference.loc["EU|1|1|web", "gate"] == "soporte", "a pool under the floor is gated by 'soporte'")
         pooled = results["series"]["EU|SIG=neutral|*"]
         RECORDER.check(abs(pooled["pipe"].median() - 210) < 1, "the monthly series of a relative sums EVERY matching series (210 = S1 + S2)")
 
 
 def test_techniques() -> None:
     RECORDER.start_block("T · techniques")
-    RECORDER.check("T7_seasonal_idx" not in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0))
-                   and "T7_seasonal_idx" in techniques.eligible_techniques(24, dict(estacional=2, tendencia=0)),
-                   "seasonal techniques need FIRM seasonality (2 cycles) by default; tentative (1 cycle) is not enough")
-    RECORDER.check("T7_seasonal_idx" in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0, requiere_firme=False)),
-                   "…unless seasonal_requires_firm is off")
-    RECORDER.check("T11_holt_winters" not in techniques.eligible_techniques(20, dict(estacional=2, tendencia=0))
-                   and "T11_holt_winters" in techniques.eligible_techniques(24, dict(estacional=2, tendencia=0)),
-                   "Holt-Winters needs 24 months even when seasonal")
-    RECORDER.check("T2_mean" in techniques.eligible_techniques(1, {}), "the challenger is always eligible")
+    RECORDER.check("T15_level_seasonal" not in techniques.eligible_techniques(24, dict(estacional=0, tendencia=0))
+                   and "T15_level_seasonal" in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0)),
+                   "the only seasonal technique competes only where the benchmark declared month effects")
+    RECORDER.check(len(techniques.CATALOGUE) == 8 and "T7_seasonal_idx" not in techniques.CATALOGUE and "T11_holt_winters" not in techniques.CATALOGUE,
+                   "the catalogue is reduced to level techniques (+ T15): 8 entries, no self-found seasonality")
+    RECORDER.check("T3_ma3" in techniques.eligible_techniques(3, {}), "the challenger is eligible with 3 months")
     months = pd.period_range("2023-01", periods=36, freq="M")
     seasonal = 0.7 + 0.1 * np.sin(2 * np.pi * (months.month - 1) / 12)
     labels = dict(estacional=2, tendencia=0, intermitente=0)
     for technique_id in techniques.CATALOGUE:
         value = techniques.predict(technique_id, seasonal, months, 3, labels)
         RECORDER.check(np.isfinite(value) and 0 < value < 1, f"{technique_id} returns a rate in (0, 1)")
-    april_prediction = techniques.predict("T7_seasonal_idx", seasonal, months, 4, labels)   # last = 2025-12 → h=4 = April
-    RECORDER.check(abs(april_prediction - 0.8) < 0.01, f"the seasonal index recovers April's .80 ({april_prediction:.3f})")
+    april_prediction = techniques.predict("T15_level_seasonal", seasonal, months, 4, labels)   # last = 2025-12 → h=4 = April
+    RECORDER.check(abs(april_prediction - 0.8) < 0.02, f"the month effect on the recent level recovers April's .80 ({april_prediction:.3f})")
     trending = np.clip(0.9 - 0.01 * np.arange(36), 0.01, 0.99)
-    far = techniques.predict("T8_damped_trend", trending, months, 24, dict(tendencia=-1))
+    far = techniques.predict("T10_holt_damped", trending, months, 24, dict(tendencia=-1))
     linear_extrapolation = trending[-1] - 0.01 * 24
-    RECORDER.check(far > linear_extrapolation + 0.05, "the damped trend saturates: far horizon stays above the linear extrapolation")
+    RECORDER.check(far > linear_extrapolation + 0.05, "the damped slope saturates: far horizon stays above the linear extrapolation")
     near_one = np.full(36, 0.99)
     RECORDER.check(techniques.predict("T2_mean", near_one, months, 1, {}) < 1.0, "the logit keeps predictions below 100 %")
 
@@ -120,7 +130,8 @@ def test_techniques() -> None:
 def test_backtest() -> None:
     RECORDER.start_block("3 · backtest, technique, bands, hold-out")
     with tempfile.TemporaryDirectory() as folder:
-        configuration = ladder_config(folder, seasonal_series=True, trend_series=True, backtest_test_start="2025-07")
+        configuration = ladder_config(folder, seasonal_series=True, trend_series=True, backtest_test_start="2025-10",
+                                      benchmark_group_dims=["region"], benchmark_min_support=100, benchmark_short_months=20)
         results = run_to_dynamics(configuration)
         with quiet():
             backtest = analysis_backtest.run_backtest_analysis(results["series"], results["dynamics"], configuration, [1, 2, 3, 4])
@@ -129,19 +140,18 @@ def test_backtest() -> None:
                        "origin + h = target for every prediction (only history ≤ origin is used)")
         RECORDER.check(np.allclose(long["err_norm"], long["err_pp"] / long["se_binom_pp"], atol=1e-2),
                        "err_norm = err_pp / binomial se of the target month")
-        RECORDER.check(long["tecnica_id"].nunique() >= 10, "many techniques compete where the history allows")
+        RECORDER.check(long["tecnica_id"].nunique() >= 6, "the level techniques compete where the history allows")
         seasonal_id = long[long["id_estimacion"] == "NA|0|0|web"]
-        RECORDER.check("T7_seasonal_idx" in set(seasonal_id["tecnica_id"]) and "T7_seasonal_idx" not in set(long[long["id_estimacion"] == "EU|0|0|web"]["tecnica_id"]),
-                       "seasonal techniques compete on the seasonal series only")
+        RECORDER.check("T15_level_seasonal" in set(seasonal_id["tecnica_id"]) and "T15_level_seasonal" not in set(long[long["id_estimacion"] == "EU|0|0|web"]["tecnica_id"]),
+                       "the seasonal technique competes only on the series the benchmark declared seasonal")
         decision = backtest["decision_technique"]
         RECORDER.check(set(decision["tramo_h"]) == {"h1", "corto", "medio", "largo"} and (decision.groupby("id_estimacion").size() == 4).all(),
                        "one champion per estimation id AND horizon band (h1 / corto / medio / largo)")
         chosen = decision[decision["tramo_h"] == "h1"].set_index("id_estimacion")
         RECORDER.check(chosen.loc["EU|0|0|web", "tecnica"] == "T2_mean" and chosen.loc["EU|0|0|web", "tecnica_origen"] == "retador",
                        "on a flat series nobody beats the challenger by the margin → T2_mean, origin 'retador'")
-        RECORDER.check(chosen.loc["NA|0|0|web", "tecnica_origen"] == "campeon"
-                       and techniques.CATALOGUE[chosen.loc["NA|0|0|web", "tecnica"]][3] == "estacional",
-                       f"on the seasonal series a seasonal champion wins ({chosen.loc['NA|0|0|web', 'tecnica']})")
+        RECORDER.check(chosen.loc["NA|0|0|web", "tecnica_origen"] == "campeon" and chosen.loc["NA|0|0|web", "tecnica"] == "T15_level_seasonal",
+                       f"on the seasonal series the month-effect technique wins ({chosen.loc['NA|0|0|web', 'tecnica']})")
         RECORDER.check(chosen.loc["NA|0|0|tele", "tecnica_origen"] == "campeon", "on the trending series a champion beats the mean")
         inherited = decision[decision["tecnica_origen"].str.endswith("_heredado")]
         RECORDER.check((inherited["tramo_h"] != "h1").all(), "a band with no screen horizon inside inherits the previous band's champion")
@@ -150,7 +160,7 @@ def test_backtest() -> None:
         RECORDER.check(all((group.diff().dropna() >= -1e-9).all() for _, group in widths), "band width never narrows with h")
         RECORDER.check((bands["q_low_norm"] <= 0).all() and (bands["q_high_norm"] >= 0).all(), "bands contain zero")
         holdout = backtest["backtest_holdout"]
-        RECORDER.check(holdout["mes_objetivo"].min() >= "2025-07", "the hold-out contains only months ≥ backtest_test_start")
+        RECORDER.check(holdout["mes_objetivo"].min() >= "2025-10", "the hold-out contains only months ≥ backtest_test_start")
         RECORDER.check(set(holdout["tecnica"]) <= set(decision["tecnica"]), "the hold-out uses the chosen technique per id and band")
         inside = holdout["dentro_banda"].mean()
         RECORDER.check(0.75 <= inside <= 1.0, f"hold-out calibration: {inside:.0%} inside the band (target ≈ 90 %)")

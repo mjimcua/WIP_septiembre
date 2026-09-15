@@ -85,16 +85,16 @@ Qué mirar: si el peldaño elegido tiene sentido, si el salto de tasa entre peld
 grande (una serie cuyo padre tiene una tasa muy distinta de la propia está heredando
 comportamiento ajeno), y las series con `elegido` en el último peldaño (bajo suelo).
 
-**P1.5 · Contrafactual Simpson y mix-shift** — `simpson_contrafactual`, `mix_shift`.
+**P1.5 · Composición: la cuenta** — `mandatory_only_cost`, `mix_shift`.
 ```sql
 SELECT celda, SUM(ahorro_usd) ahorro, AVG(gana_segmentado) pct_gana, COUNT(*) meses
-FROM sff_simpson_contrafactual GROUP BY 1 ORDER BY ahorro DESC
+FROM sff_mandatory_only_cost GROUP BY 1 ORDER BY ahorro DESC
 SELECT celda, AVG(ABS(delta_composicion_pp)) riesgo_mix_pp, AVG(ABS(delta_comportamiento_pp)) mov_comportamiento_pp
 FROM sff_mix_shift GROUP BY 1 ORDER BY 2 DESC
 ```
-Qué mirar: en qué celdas segmentar ahorra dinero (contra el método plano, con los pesos
-reales del mes) y en qué celdas el agregado se mueve por composición (el Simpson
-silencioso). Compartir: ambas.
+Qué mirar: cuánto sobre o infraestimaría la vista solo-mandatory (una tasa por celda) y en
+qué celdas; y en qué celdas el agregado se mueve por composición. Es la cuenta de la
+composición, no una búsqueda de casos. Compartir: ambas.
 
 **P1.6 · Calibración de los flags timevarying** — `tv_calibration`.
 ```sql
@@ -109,16 +109,15 @@ Compartir: la tabla (pocas filas) y, si hay un flag dudoso, su serie mensual.
 
 ## FASE 2 · dinámica
 
-**P2.1 ★ Diagnóstico de dinámica por id de estimación** — `decision_dynamics`.
+**P2.1 ★★ El benchmark de estacionalidad** — `decision_estacionalidad` (consola `[2] SEASONALITY BENCHMARK`).
 ```sql
-SELECT id_estimacion, meses, n_pool, tasa_pool, cota_pp, phi, sd_obs_pp, sd_binom_pp, gate,
-       estacional, amp_estacional_pp, ciclos_completos, meses_alto, meses_bajo, tendencia, pendiente_pp_ano
-FROM sff_decision_dynamics ORDER BY n_pool DESC
+SELECT fs_id, grupo, usd_proyectado, n_mediana, meses, phi, amplitud_pp, mes_alto, mes_bajo, consistencia_alto, consistencia_bajo,
+       mejora_h1_pct, mejora_h6_pct, usd_impacto, veredicto_estacional, pendiente_pp_anio, veredicto_tendencia, motivo
+FROM sff_decision_estacionalidad ORDER BY usd_proyectado DESC
 ```
-Qué mirar: `phi` es la clave. φ ≈ 1: la tasa no se mueve, muestrea; la media es la mejor
-técnica y no hay que buscar más. φ ≫ 1: hay motor. `gate` dice cuál cree el sistema que es
-(estacional / tendencia) y `meses_alto` / `meses_bajo` los meses del perfil.
-Compartir: la tabla entera ordenada por n_pool (suelen ser < 50 filas).
+Qué mirar: la DECISIÓN de la consola (sin estación material / estación en estas series), y por serie: φ (cuánto se mueve más que el muestreo), amplitud en pp y meses extremos, si esos meses son altos/bajos todos los años, y si la forma mejora al nivel reciente a 1 y 6 meses vista. `bench_panel` (serie × mes × año → z) es la figura para Power BI; `bench_flags`, la estación de las señales. Compartir: la tabla entera y la línea DECISION.
+
+**P2.2 · Referencia de pools** — `pool_reference`: por id de estimación, meses, soporte, tasa, gate y si lleva efectos de mes.
 
 ---
 
@@ -179,13 +178,19 @@ FROM sff_business_summary
 ```
 Qué mirar: ¿cómo acaba este año? (`renovado_real` + `forecast` = `total_esperado`); ¿cuál es la pipeline del año que viene? (real = contratos que existen hoy; proyectada = reentradas de renovaciones que estamos prediciendo; simulada = adquisición al ritmo histórico); ¿cómo acaba el año que viene? (forecast sobre cada origen). Cada fila de `forecast_detail` lleva `origen_pipeline` para tirar del hilo.
 
+**P5.01 ★ La baseline de Excel** — `baseline_summary` (consola `[5] BASELINE`).
+```sql
+SELECT * FROM sff_baseline_summary
+```
+Qué mirar: por grano (global / corte grueso / mandatory) y ventana (1 / 3 / 12 meses), el forecast del resto del año y del siguiente frente al framework, y el error walk-forward de la propia baseline a 1 y 4 meses con su sesgo. Si la baseline reproduce la cifra de negocio, la diferencia con el framework está en las filas de `baseline_forecast` por mes; y el walk-forward dice cuál de las dos ha acertado más en los últimos 12 meses.
+
 **P5.0 ★★ El resumen de la pipeline** — `pipeline_summary` (o consola `[5] PIPELINE SUMMARY`).
 ```sql
 SELECT bloque, meses, pipeline_usd, esperado_usd, banda_low_usd, banda_high_usd, pct_banda_high,
        cota_min_usd, pct_cota_min, cota_max_usd, pct_cota_max, pct_simulado, pct_nivel_A, error_realizado_pct
 FROM sff_pipeline_summary
 ```
-Qué mirar: por bloque (resto del año, año siguiente, total) los tres márgenes en dinero: la **banda calibrada** (lo que prometemos), la **cota mínima** (el muestreo de cada unidad en cuadratura: ningún método la baja), la **cota máxima** (todo el muestreo sumado en la misma dirección: el peor caso absoluto). La mejora de la pipeline se mide como la banda acercándose a la cota mínima. `error_realizado_pct` es lo que pasó de verdad en el hold-out a h ≤ 4. Compartir: la tabla entera (3-4 filas). Es la primera que hay que mirar.
+Qué mirar: por bloque (resto del año, año siguiente, total): la **banda total** (idiosincrática ⊕ común: lo que prometemos), sus dos partes, la **cota mínima** (el muestreo de cada unidad en cuadratura: ningún método la baja), la **cota máxima** (todo el muestreo sumado en la misma dirección: el peor caso absoluto). La mejora de la pipeline se mide como la banda acercándose a la cota mínima. `error_realizado_pct` es lo que pasó de verdad en el hold-out a h ≤ 4. Compartir: la tabla entera (3-4 filas). Es la primera que hay que mirar.
 
 **P5.1 ★ Horizonte** — `horizon_report_total`.
 ```sql
@@ -194,6 +199,12 @@ FROM sff_horizon_report_total ORDER BY period
 ```
 Qué mirar: el total mensual con su banda asimétrica; desde qué mes el pipeline es simulado
 (`pct_simulado`) y con qué factor de adquisición (consola `[5]`). Compartir: la tabla entera.
+
+**P5.1b ★ Por región** — `forecast_by_region`.
+```sql
+SELECT region, esperado_usd, pct_del_total, pct_banda, pct_nivel_A, pct_senal, pct_nivel_S, uplift_medio, composicion_pct FROM sff_forecast_by_region ORDER BY esperado_usd DESC
+```
+Qué mirar: el cuadrante de cada región (peso × certeza) y sus palancas; ver `ESTRATEGIA_POR_REGION.md`.
 
 **P5.2 · Forecast por nivel de riesgo** — `forecast_by_level`.
 ```sql

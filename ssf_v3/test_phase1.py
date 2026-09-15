@@ -22,15 +22,16 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from checks import CheckRecorder                                                   # noqa: E402
-from test_fixtures import ladder_config, phase_0_units, quiet                             # noqa: E402
-import run_rate_series                                                             # noqa: E402
-import analysis_dimensions                                                         # noqa: E402
-import run_support_ladder                                                          # noqa: E402
-from run_support_ladder import build_relatives, collapse_order                     # noqa: E402
+from checks import CheckRecorder
+from test_fixtures import ladder_config, phase_0_units, quiet
+import run_rate_series
+import analysis_dimensions
+import run_support_ladder
+from run_support_ladder import build_relatives, collapse_order
 
 RECORDER = CheckRecorder()
 
@@ -41,6 +42,7 @@ def run_to_ladder(configuration):
         units, summary = run_rate_series.build_rate_series(labeled, configuration)
         dims = analysis_dimensions.run_dimension_analysis(units, summary, configuration)
         estimates, card, decision, ladder = run_support_ladder.run_support_ladder(units, summary, dims["decision_eta2"], configuration)
+        composition = analysis_dimensions.run_composition_analysis(units, configuration)
     return dict(fine=fine, units=units, summary=summary, dims=dims, estimates=estimates, card=card,
                 decision=decision, ladder=ladder)
 
@@ -130,7 +132,7 @@ def test_dimension_separation() -> None:
 
 
 def test_mix_shift() -> None:
-    RECORDER.start_block("1.2 · mix-shift (counterfactual + Kitagawa)")
+    RECORDER.start_block("1.4 · composition (mandatory-only cost + Kitagawa)")
     with tempfile.TemporaryDirectory() as folder:
         configuration = ladder_config(folder)
         fine, labeled = phase_0_units(configuration)

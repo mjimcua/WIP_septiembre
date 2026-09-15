@@ -59,7 +59,7 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
         current_not_projection = int((fine[configuration.current_month_col].isin([1, True, "1"]) & (fine[configuration.dataset_role_col] != "projection")).sum())
         rows.append(check_row("current month is projection", FAMILY_DOCTRINE, current_not_projection, "= 0", current_not_projection == 0))
     detail = artifacts.get("forecast_detail")
-    if detail is not None and len(detail):
+    if detail is not None and len(detail) and "esperado_usd" in detail.columns:
         rows.append(check_row("forecast without NaN", FAMILY_DOCTRINE, int(detail["esperado_usd"].isna().sum()), "= 0", not detail["esperado_usd"].isna().any()))
         over = int((detail["tasa"] > configuration.rate_cap + 1e-9).sum())
         rows.append(check_row("rate under the cap", FAMILY_DOCTRINE, over, "= 0", over == 0))

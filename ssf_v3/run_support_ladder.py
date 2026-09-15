@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 from binomial_reference import binomial_se_pp, wilson_half_width_pp
-from config import ID_FIELD_SEPARATOR, Config
+from config import ID_FIELD_SEPARATOR, Config, explain
 from run_rate_series import (PROJECTION_ROLE, ROUTE_TRAINABLE, SIGN_MIXED, SIGN_NEUTRAL,
                              UNIVERSE_NORMAL)
 
@@ -164,7 +164,7 @@ def series_patterns_table(series_summary: pd.DataFrame, units: pd.DataFrame, con
         for rung, description, pattern in build_relatives(values.to_dict(), sign_by_series.get(series_id, SIGN_NEUTRAL),
                                                           configuration, annullable_extra, mandatory_collapse_order, collapse_loss):
             rows.append(dict(fs_id=series_id, peldano=rung, descripcion=description, patron=pattern))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["fs_id", "peldano", "descripcion", "patron"])
 
 
 def pool_support(units: pd.DataFrame, patterns: pd.DataFrame, configuration: Config) -> pd.DataFrame:
@@ -177,6 +177,8 @@ def pool_support(units: pd.DataFrame, patterns: pd.DataFrame, configuration: Con
     RULES:   only history rows of the normal universe with a defined rate.
     """
     history = units[(units["universo"] == UNIVERSE_NORMAL) & units["tasa"].notna()]
+    if patterns.empty:
+        return pd.DataFrame(columns=["patron", "n_pool", "ren_pool", "pipe_pool", "tasa_pool"])
     membership = patterns[["fs_id", "patron"]].drop_duplicates()
     joined = history.merge(membership, on="fs_id")
     monthly = joined.groupby(["patron", configuration.period_col]).agg(
@@ -210,6 +212,8 @@ def climb_ladder(series_summary: pd.DataFrame, patterns: pd.DataFrame, pools: pd
     """
     ladder = patterns.merge(pools, on="patron", how="left").fillna({"n_pool": 0.0})
     decisions, trace_rows = [], []
+    decision_columns = ["fs_id", "signo", "ruta", "id_estimacion", "peldano", "n_efectivo", "tasa_pariente", "alcanzo_suelo"]
+    trace_columns = ["fs_id", "peldano", "descripcion", "padre_id", "n_padre", "tasa_padre", "elegido"]
     info = series_summary.set_index("fs_id")
     for series_id, rungs in ladder.groupby("fs_id", sort=False):
         rungs = rungs.sort_values("peldano")
@@ -235,7 +239,7 @@ def climb_ladder(series_summary: pd.DataFrame, patterns: pd.DataFrame, pools: pd
                               id_estimacion=chosen["patron"], peldano=int(chosen["peldano"]),
                               n_efectivo=float(chosen["n_pool"]), tasa_pariente=float(chosen["tasa_pool"]),
                               alcanzo_suelo=int(reached_floor)))
-    return pd.DataFrame(decisions), pd.DataFrame(trace_rows)
+    return pd.DataFrame(decisions, columns=decision_columns), pd.DataFrame(trace_rows, columns=trace_columns)
 
 
 def estimate_credibility_k(series_summary: pd.DataFrame, decision_support: pd.DataFrame,
@@ -378,7 +382,7 @@ def build_support_chain(series_summary: pd.DataFrame, parent_ladder: pd.DataFram
         rows.append(dict(fs_id=series_id, etapa="9_final", id_efectivo=f"z={final['z']}→{final['id_estimacion']}",
                          n_efectivo=final["n_efectivo"], tasa=final["tasa_estimada"],
                          se_pp=final["se_estimacion_pp"], usd_proyectado=money.get(series_id, 0.0)))
-    chain = pd.DataFrame(rows)
+    chain = pd.DataFrame(rows, columns=["fs_id", "etapa", "id_efectivo", "n_efectivo", "tasa", "se_pp", "usd_proyectado"])
     chain["moe_usd"] = configuration.z * chain["se_pp"] / 100 * chain["usd_proyectado"]
     return chain
 
@@ -463,6 +467,10 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
           f"{(chosen['alcanzo_suelo'] == 1).mean():.0%} of trainable series reached the floor · "
           f"median rung {chosen['peldano'].median():.0f}")
     print_risk_levels(report)
+    explain(configuration,
+            "How to read: the error is the typical sampling error of one month for the series of that level (se_prediccion, weighted by money):",
+            "even with a perfect estimate of the rate, next month's result moves that much by chance. It is a property of the size of the series, not of the method.",
+            f"Levels A/A2 predict alone (≥ {configuration.own_rate_floor:.0f} contracts/month, ±5 pp or better); A3 blends its own rate with its pool; B/C borrow; S/M/D/N have no usable rate of their own.")
     print_level_definitions()
     print(f"[1.3] collapse route of the mandatory dims (first to collapse → last): {' → '.join(order)}")
     return series_estimates, card, decision_support, parent_ladder

@@ -36,11 +36,12 @@ from sqlalchemy import create_engine
 
 # every module lives in this folder; make sure it is importable (a notebook may run
 # from elsewhere). __file__ is undefined in a notebook, so fall back to the cwd.
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from checks import CheckRecorder                                  # noqa: E402
-from config import (Config, PHYSICAL_TABLE_NAMES, hash_key,      # noqa: E402
+from checks import CheckRecorder
+from config import (Config, PHYSICAL_TABLE_NAMES, hash_key,
                     join_columns)
 
 
@@ -69,7 +70,7 @@ EXPECTED_PRODUCTION_EXTRA_REVALORIZACION = [
     "price_cap", "msrp_increased", "discount_interval", "prev_OperationGroup"]
 EXPECTED_BUSINESS_PARAMETERS = {"support_floor": 30.0, "z": 1.645, "rate_cap": 0.95,
                                 "k_cred": 60.0, "uplift_floor": 30.0, "uplift_cap": 3.0,
-                                "gap_rate_policy": "no_rate", "backtest_max_targets": 24}
+                                "gap_rate_policy": "no_rate", "backtest_max_targets": 6}
 
 # Physical names the reference and the BI already depend on. Sampled, not exhaustive: the
 # full registry is checked for size and for prefixing.
@@ -81,10 +82,10 @@ EXPECTED_PHYSICAL_NAMES = {"forecast_units_raw_summary": "sff_fu_summary",
                            "fact_fine": "sff_fact_fine"}
 
 # Size of the physical-name registry: the 36 tables of v3 (phase 0: 10, with the level-0/1
-# profiles · phase 1: 11 · phase 2: 1 · phase 3: 6 · phase 4: 2 · phase 5: 9).
-EXPECTED_REGISTRY_SIZE = 39
-DECISION_TABLES = ["decision_eta2", "decision_support", "decision_dynamics", "decision_technique",
-                   "decision_error_bands", "decision_uplift"]
+# profiles · phase 1: 11 · phase 2: 4 · phase 3: 8 · phase 4: 2 · phase 5: 12).
+EXPECTED_REGISTRY_SIZE = 47
+DECISION_TABLES = ["decision_eta2", "decision_support", "decision_estacionalidad", "pool_reference", "decision_technique",
+                   "decision_error_bands", "decision_uplift", "decision_aggregate_bands"]
 
 
 RECORDER = CheckRecorder()
@@ -670,7 +671,7 @@ def test_physical_name_registry() -> None:
 
     # the six decision tables are the contract between ANALYSIS and RUN
     RECORDER.check(all(name in PHYSICAL_TABLE_NAMES for name in DECISION_TABLES),
-                   "the registry holds the six decision tables (ANALYSIS → RUN contract)")
+                   "the registry holds the eight decision tables (ANALYSIS → RUN contract)")
     RECORDER.check(not any("showcase" in name for name in PHYSICAL_TABLE_NAMES),
                    "no showcase table: Simpson is explained by decomposition, not by case hunting")
 

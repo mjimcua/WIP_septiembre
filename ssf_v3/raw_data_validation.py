@@ -1,7 +1,7 @@
 """raw_data_validation.py — SFF v2 · RUN · phase 0: the raw becomes computable.
 
 "Load, review, condition, and establish a reference to compare against" (DISENO_V2 §5).
-Not a single datum is modified: the raw is immutable — label, never amputate (P4). This
+Not a single datum is modified: the raw is immutable — label, never amputate. This
 module is the OPERATIONAL part of phase 0, the minimum that must run every month before
 any rate can be computed:
 
@@ -37,6 +37,10 @@ EXPECTED_DATASET_ROLES = ("train", "test", "projection")
 
 # The role of every row of the future; the current month is reassigned to it.
 PROJECTION_ROLE = "projection"
+PENDING_ROLE = "pending_close"
+TEST_ROLE = "test"
+TRAIN_ROLE = "train"
+TRUTH_ROLES = (TRAIN_ROLE, TEST_ROLE)        # closed months: the only ones that are truth
 
 # Raw values that mean "this row belongs to the current month". The extract may
 # encode the flag as int, bool or text depending on the SQL client.
@@ -59,7 +63,7 @@ UNIVERSE_TIME_SERIES = "time_series"
 # Route labels (persisted in `ruta`).
 ROUTE_TRAINABLE = "trainable"      # history and future: a rate can be estimated
 ROUTE_HEURISTIC = "heuristic"      # future without history: the cascade decides
-ROUTE_NO_IMPACT = "no_impact"      # no projection rows: nothing to predict, kept (P4)
+ROUTE_NO_IMPACT = "no_impact"      # no projection rows: nothing to predict, kept
 
 # Separator of the coverage pattern, e.g. "projection_test_train".
 COVERAGE_SEPARATOR = "_"
@@ -145,49 +149,57 @@ def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
 
 
 def apply_current_month_doctrine(validated: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """The running month is the FIRST month to project; its early results are wiped.
+    """The calendar of roles is decided from the CURRENT MONTH; the raw's roles are overwritten.
 
     INPUT:   validated — the frame returned by `validate_raw` · configuration — uses
-             current_month_col, dataset_role_col, period_col, renewed_*_col,
-             reacq_*_col.
-    OUTPUT:  a copy where every current-month row has role "projection" and every
-             projection row has its renewed and reacquired measures set to NaN.
-    RULES:   the current month has a complete pipeline
-             and an incomplete result, so it is never test (it would contaminate the
-             backtest) and never train; it is projected like any future month. Any
-             renewal already booked in the current month OR in any projection month is
-             wiped, so the future looks like it has not started yet. From this point
-             on, THIS is the raw.
-    EDGE CASES: a raw with no current-month flag set reassigns nothing and wipes only
-             what projection rows already carried. Reacquisition columns are wiped only
-             if present.
-    CONSOLE: which months were current, how many rows were reassigned, what was wiped
-             (rows, units, USD), the roles after conditioning.
+             current_month_col, dataset_role_col, period_col, renewed_*_col, reacq_*_col,
+             pending_close_months, test_months.
+    OUTPUT:  a copy where dataset_role is: "projection" for the current month and later
+             (their results wiped), "pending_close" for the `pending_close_months` just
+             before it (results KEPT but never used to learn or to evaluate), "test" for
+             the `test_months` before those, "train" for everything earlier.
+    RULES:   the current month is the first month of the future: a month still running
+             cannot be truth. The month before it is not closed either (renewals land
+             after expiry), so it is neither truth nor future: pending. The exam is the
+             most recent closed months; the forecast learns from every closed month.
+    EDGE CASES: a raw with no current-month flag falls back to the raw's own roles and
+             only wipes what projection rows carried. Reacquisition columns are wiped
+             only when they exist.
+    CONSOLE: the calendar (which months are what), rows reassigned, what was wiped.
     STEPS:
-      [1] Detect the current month rows (truthy flag).
-      [2] Reassign them to projection.
-      [3] Measure the early results carried by projection rows, then wipe them.
+      [1] Detect the current month.
+      [2] Assign the roles from it.
+      [3] Wipe the early results of projection rows.
       [4] Report.
     """
     conditioned = validated.copy()
+    period_column, role_column = configuration.period_col, configuration.dataset_role_col
 
     # [1] the flag may arrive as int, bool or text
     flag_values = conditioned[configuration.current_month_col]
     current_month_mask = flag_values.isin(CURRENT_MONTH_TRUTHY_VALUES) | (flag_values == 1)
-    current_periods = sorted(conditioned.loc[current_month_mask, configuration.period_col]
-                             .astype(str).unique())
+    current_periods = sorted(conditioned.loc[current_month_mask, period_column].unique())
 
-    # [2] the current month is the first month of the future
-    role_column = configuration.dataset_role_col
-    reassigned_row_count = int((current_month_mask & (conditioned[role_column] != PROJECTION_ROLE)).sum())
-    conditioned.loc[current_month_mask, role_column] = PROJECTION_ROLE
+    # [2] the calendar from the current month
+    original_roles = conditioned[role_column].copy()
+    if current_periods:
+        current = current_periods[0]
+        pending_start = current - int(configuration.pending_close_months)
+        test_start = pending_start - int(configuration.test_months)
+        periods = conditioned[period_column]
+        conditioned[role_column] = np.select(
+            [periods >= current, periods >= pending_start, periods >= test_start],
+            [PROJECTION_ROLE, PENDING_ROLE, TEST_ROLE], default=TRAIN_ROLE)
+        calendar = (f"train ≤ {test_start - 1} · test {test_start}..{pending_start - 1} ({configuration.test_months} months) · "
+                    f"pending_close {pending_start}..{current - 1} · projection ≥ {current}")
+    else:
+        calendar = "no current-month flag: the raw's own roles are kept"
+    reassigned_row_count = int((conditioned[role_column] != original_roles).sum())
 
     # [3] the future must look like it has not started: wipe what was already booked
     projection_mask = conditioned[role_column] == PROJECTION_ROLE
-    wipe_columns = [column_name for column_name in (configuration.renewed_units_col,
-                                                    configuration.renewed_usd_col,
-                                                    configuration.reacq_units_col,
-                                                    configuration.reacq_usd_col)
+    wipe_columns = [column_name for column_name in (configuration.renewed_units_col, configuration.renewed_usd_col,
+                                                    configuration.reacq_units_col, configuration.reacq_usd_col)
                     if column_name in conditioned.columns]
     early_results = conditioned.loc[projection_mask, wipe_columns].fillna(0)
     rows_with_early_results = int((early_results != 0).any(axis=1).sum())
@@ -197,11 +209,9 @@ def apply_current_month_doctrine(validated: pd.DataFrame, configuration: Config)
 
     # [4] what happened, in numbers
     final_role_census = conditioned[role_column].value_counts().to_dict()
-    print(f"[0.1] current month {current_periods} → PROJECTION ({reassigned_row_count} rows "
-          f"reassigned): it is the FIRST month to project, never test")
-    print(f"[0.1] projection cleansing: {rows_with_early_results} rows carried early "
-          f"results — wiped {wiped_renewed_units:,.0f} renewed units / "
-          f"${wiped_renewed_usd:,.0f} (reacquisitions included in the wipe)")
+    print(f"[0.1] calendar from the current month {[str(p) for p in current_periods]}: {calendar}")
+    print(f"[0.1] {reassigned_row_count:,} rows changed role against the raw · projection cleansing: {rows_with_early_results} rows carried "
+          f"early results — wiped {wiped_renewed_units:,.0f} renewed units / ${wiped_renewed_usd:,.0f} (reacquisitions included)")
     print(f"[0.1] roles after conditioning {final_role_census} · from here on, THIS is the raw")
     return conditioned
 
@@ -343,22 +353,23 @@ def route_from_coverage(coverage_pattern: str) -> str:
 
     INPUT:   coverage_pattern — the roles of the series joined with "_", sorted.
     OUTPUT:  one of ROUTE_TRAINABLE, ROUTE_HEURISTIC, ROUTE_NO_IMPACT.
-    RULES:   no projection rows → nothing to predict → no_impact (kept, P4);
-             projection and train → a rate can be estimated → trainable;
-             projection without train → future without history → heuristic (the
-             assembly cascade gives it its cell's rate).
-    EDGE CASES: "test" alone counts as history absent: test rows are not used to fit.
+    RULES:   no projection nor pending rows → nothing to predict → no_impact (kept: the raw is labeled, never amputated);
+             something to predict and a closed month (train or test) → trainable;
+             something to predict without any closed month → heuristic (the assembly
+             cascade gives it its cell's rate).
+    EDGE CASES: a pending_close month alone is not history (not closed) but is a month
+             to predict.
     CONSOLE: nothing.
     STEPS:
       [1] No future: no impact.
       [2] History or not.
     """
     # [1] nothing to project
-    if PROJECTION_ROLE not in coverage_pattern:
+    if PROJECTION_ROLE not in coverage_pattern and PENDING_ROLE not in coverage_pattern:
         return ROUTE_NO_IMPACT
 
-    # [2] with history it is trainable; without, heuristic
-    if "train" in coverage_pattern:
+    # [2] with a closed month it is trainable; without, heuristic
+    if TRAIN_ROLE in coverage_pattern or TEST_ROLE in coverage_pattern:
         return ROUTE_TRAINABLE
     return ROUTE_HEURISTIC
 
@@ -400,5 +411,5 @@ def label_universe_and_routes(forecast_units: pd.DataFrame, configuration: Confi
     # [4] the route is a label the later phases read; nobody is dropped
     labeled_units["ruta"] = labeled_units["cobertura"].map(route_from_coverage)
     route_census = labeled_units.drop_duplicates("fs_id")["ruta"].value_counts().to_dict()
-    print(f"[0.3] routes per series: {route_census} — no_impact is labeled, never dropped (P4)")
+    print(f"[0.3] routes per series: {route_census} — no_impact is labeled, never dropped")
     return labeled_units

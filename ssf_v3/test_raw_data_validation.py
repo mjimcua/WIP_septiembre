@@ -29,16 +29,17 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 # every module lives in this folder; make sure it is importable.
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from checks import CheckRecorder                                    # noqa: E402
-from config import Config, hash_key                                 # noqa: E402
-from raw_data_validation import (apply_current_month_doctrine,      # noqa: E402
+from checks import CheckRecorder
+from config import Config, hash_key
+from raw_data_validation import (apply_current_month_doctrine,
                                  aggregate_to_forecast_units, build_fine_table,
                                  build_key_lookups, label_universe_and_routes,
                                  route_from_coverage, validate_raw)
-from support_reference import build_support_reference               # noqa: E402
+from support_reference import build_support_reference
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -59,6 +60,9 @@ RECORDER = CheckRecorder()
 def build_test_config(**overrides) -> Config:
     """A Config on the test taxonomy; every other field is the production default."""
     config_arguments = dict(TEST_TAXONOMY)
+    # the six-row raw spans four months: no pending month and one test month, so that
+    # 2026-01 is train, 2026-02 test, 2026-03 (current) and later projection
+    config_arguments.update(dict(pending_close_months=0, test_months=1))
     config_arguments.update(overrides)
     return Config(**config_arguments)
 
@@ -339,7 +343,7 @@ def test_aggregate_to_forecast_units() -> None:
 
     # an inconsistent extract (role varying inside a unit) is caught by uniqueness
     inconsistent_fine = fine_table.copy()
-    inconsistent_fine.loc[1, "dataset_role"] = "test"
+    inconsistent_fine.loc[1, "dataset_role"] = "projection"
     inconsistency_caught = False
     try:
         aggregate_to_forecast_units(inconsistent_fine, configuration)
@@ -386,8 +390,12 @@ def test_routes_and_labels() -> None:
                    "train + projection (no test) → trainable")
     RECORDER.check(route_from_coverage("projection") == "heuristic",
                    "future without history → heuristic")
-    RECORDER.check(route_from_coverage("projection_test") == "heuristic",
-                   "test rows are not history: test + projection → heuristic")
+    RECORDER.check(route_from_coverage("projection_test") == "trainable",
+                   "test rows ARE closed months: test + projection → trainable (the forecast learns from them)")
+    RECORDER.check(route_from_coverage("pending_close_projection") == "heuristic",
+                   "a pending month is not closed: pending + projection without train/test → heuristic")
+    RECORDER.check(route_from_coverage("pending_close_train") == "trainable",
+                   "a pending month is something to predict: train + pending → trainable")
     RECORDER.check(route_from_coverage("train") == "no_impact"
                    and route_from_coverage("test_train") == "no_impact",
                    "no projection rows → no_impact")

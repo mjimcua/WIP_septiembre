@@ -1,116 +1,233 @@
 ══════════════════════════════════════════════════════════════════════════ 
 PHASE 0 — raw data validation
-[0.1] contract ✓ 17 columns declared · 843 rows
-[0.1] current month ['2026-09'] → PROJECTION (17 rows reassigned): it is the FIRST month to project, never test
-[0.1] projection cleansing: 17 rows carried early results — wiped 337 renewed units / $10,406 (reacquisitions included in the wipe)
-[0.1] roles after conditioning {'train': 639, 'test': 134, 'projection': 70} · from here on, THIS is the raw
-[0.2] fine 843 rows → forecast units 747 · pipeline conserved ✓ ($2,323,980)
+[0] raw read in 0.0 s · 843 rows
+[0.1] contract OK: 17 columns declared · 843 rows
+[0.1] calendar from the current month ['2026-09']: train ≤ 2026-01 · test 2026-02..2026-07 (6 months) · pending_close 2026-08..2026-08 · projection ≥ 2026-09
+[0.1] 51 rows changed role against the raw · projection cleansing: 17 rows carried early results — wiped 337 renewed units / $10,406 (reacquisitions included)
+[0.1] roles after conditioning {'train': 656, 'test': 100, 'projection': 70, 'pending_close': 17} · from here on, THIS is the raw
+[0.2] fine 843 rows → forecast units 747 · pipeline conserved ($2,323,980)
 [0.2] lookups: 747 forecast units · 2 combinations
-[0.3] routes per series: {'trainable': 15, 'heuristic': 1, 'no_impact': 1} — no_impact is labeled, never dropped (P4)
+[0.3] routes per series: {'trainable': 15, 'heuristic': 1, 'no_impact': 1} — no_impact is labeled, never dropped
+[0.4] raw profile (level 0):
+   calendario   meses en el raw                                            48                           2023-01 .. 2026-12
+   calendario   meses de calendario sin ninguna fila                       0                            
+   calendario   rol pending_close                                          2026-08 .. 2026-08 (1 meses) contiguo
+   calendario   rol projection                                             2026-09 .. 2026-12 (4 meses) contiguo
+   calendario   rol test                                                   2026-02 .. 2026-07 (6 meses) contiguo
+   calendario   rol train                                                  2023-01 .. 2026-01 (37 meses) contiguo
+   calendario   la proyección empieza en el mes en curso                   1                            proyección desde 2026-09, mes en curso 2026-09
+   calendario   test empieza justo después de train                        1                            train hasta 2026-01, test desde 2026-02
+   dimensiones  valores que aparecen o desaparecen dentro de la historia   0                            $0 de pipeline histórico; ver dimension_domains
+   medidas      filas con renovados > pipeline                             0                            $0
+   medidas      filas con medidas negativas                                0                            
+   medidas      filas con pipeline 0 y renovados > 0                       0                            0 renovados sin vencimiento
+   medidas      filas con pipeline 0                                       0                            
+   medidas      filas con AUV de pipeline fuera de [1.0, 10000.0]          0                            $0
+   medidas      AUV de pipeline: p5 / mediana / p95                        18.00 / 30.00 / 30.00        
+   medidas      filas con uplift de fila fuera de [0.3, 3.0]               0                            $0 renovados; son el origen de los uplifts recortados
+   medidas      uplift de fila: p5 / mediana / p95                         0.999 / 1.033 / 1.499        
+   medidas      universo time_series                                       48 filas                     $72,000 de pipeline
+   plazo        columna de plazo                                           no declarada                 todas las filas reentran a renewal_term_months
 ══════════════════════════════════════════════════════════════════════════ 
-PHASE 1 — rate series, dimensions, support ladder
-[1.1] 17 series · synthetic gap rows 11 (rate undefined) · 10 trainable series below the floor carry $15,840 of $193,980 projected
+PHASE 1 — rate series, dimensions, support ladder   (previous section 0.2 s)
+[1.1] 17 series · synthetic gap rows 10 (rate undefined) · 10 trainable series below the floor carry $19,800 of $242,100 projected
+       > A series is one segment (region, product, plazo, banda, señales, cliente nuevo) followed month by month; its rate is renewed / expired.
+       > 'Below the floor' = fewer than 30 contracts in a typical month: a rate measured on that few moves ±15 pp by chance alone,
+       > so those series will borrow support from a relative in the ladder instead of predicting with their own rate.
+[1.1b] fu profile (level 1): 16 series with history · 0 born inside the history ($0 projected) · 2 dead before its end ($4,800 projected) · 0 units where fine and unit money differ
+[1.1b] the dial on the units (monthly support, before borrowing): bucket · series · $ projected · %
+   0_menos_de_30            10 series  $       12,300    5.1%
+   1_30_a_271                2 series  $       12,300    5.1%
+   2_271_a_752               4 series  $      214,800   89.7%
+[1.1b] combinations: median per unit 1, 0 series with ≥ 10 in a unit · 4 series with ≥ 3 months at 0 % or 100 % on a small pipeline
 [1.2] dimension separation (neutral series, weights = support):
-   region                     η²=0.170  unique=0.052  ω²=0.028  
-   product                    η²=0.605  unique=0.483  ω²=0.506  (annullable)
-   channel                    η²=0.013  unique=0.000  ω²=0.000  (annullable)
-[1.2] Simpson counterfactual: saving of the segmented method $12,992 over 12 walk-forward months · segmented wins in 62% of cell-months
-[1.2] mix-shift: 8% of the month-to-month movement of cell rates is composition, not behaviour
+   region                     η²=0.169  unique=0.053  ω²=0.026  collapses #1 (loses R² 0.169)
+   product                    η²=0.598  unique=0.478  ω²=0.497  (annullable extra)
+   channel                    η²=0.013  unique=0.000  ω²=0.000  (annullable extra)
+       > η² = share of the variance of the series' rates that a dimension explains ALONE (0 = the rate is the same across its values; 1 = it decides the rate).
+       > 'unique' = what is lost if that dimension is removed while the others stay (0 when another dimension carries the same information, e.g. nested levels).
+       > 'collapses #k' = the order in which the ladder drops mandatory dims to find relatives: the ones that separate least fall first, so pooled cohorts stay alike.
 [1.3] ladder: collapse order ['region'] · annullable extra 'channel' · 80% of trainable series reached the floor · median rung 1
 [1.3] money by risk level · 1_soporte
-   A_propio                  5 series  $     175,440   90.4%  error ±3.2 pp
-   B_prestado                7 series  $       8,640    4.5%  error ±14.6 pp
-   D_sin_historia            1 series  $       2,700    1.4%  error ±0.0 pp
-   M_signo_mixto             1 series  $         480    0.2%  error ±34.5 pp
+   A3_propio_reforzado       1 series  $       4,800    2.0%  error ±8.6 pp
+   A_propio                  4 series  $     214,800   88.7%  error ±3.0 pp
+   B_prestado                7 series  $      10,800    4.5%  error ±14.6 pp
+   D_sin_historia            1 series  $       2,700    1.1%  error n/a (no rate)
+   M_signo_mixto             1 series  $         600    0.2%  error ±34.6 pp
    N_sin_impacto             1 series  $           0    0.0%  error ±12.8 pp
-   S_signo_bajo_suelo        1 series  $         720    0.4%  error ±12.6 pp
-   T_universo_ts             1 series  $       6,000    3.1%  error ±0.0 pp
+   S_signo_bajo_suelo        1 series  $         900    0.4%  error ±12.6 pp
+   T_universo_ts             1 series  $       7,500    3.1%  error n/a (no rate)
+       > How to read: the error is the typical sampling error of one month for the series of that level (se_prediccion, weighted by money):
+       > even with a perfect estimate of the rate, next month's result moves that much by chance. It is a property of the size of the series, not of the method.
+       > Levels A/A2 predict alone (≥ 271 contracts/month, ±5 pp or better); A3 blends its own rate with its pool; B/C borrow; S/M/D/N have no usable rate of their own.
+[1.3] risk levels · rule → meaning
+   A_propio               n ≥ own_rate_floor y ≥ 12 meses    precisión propia (±5 pp o mejor): predice sola, z = 1
+   A2_propio_corto        n ≥ own_rate_floor y < 12 meses    precisión propia pero historia corta: aún no ha visto todas las estaciones
+   A3_propio_reforzado    suelo ≤ n < own_rate_floor         evidencia propia sin precisión: usa su tasa y la completa con su primer pariente con soporte (z = n/(n+k)); si no lo hay, va sola
+   B_prestado             peldaño 1-2 con suelo              bajo el suelo; toma la tasa de un pariente que comparte TODAS las mandatory (mismo signo o la extra anulada): cohorte casi idéntica
+   C_lejano               peldaño ≥ 3 con suelo              bajo el suelo; el pariente es la celda mandatory entera o una mandatory colapsada: cohorte más gruesa, riesgo de heredar comportamiento ajeno
+   S_signo_bajo_suelo     con señal y ningún peldaño llega   tiene una señal (flag neg/pos) y su escalera termina en celda × signo sin llegar al suelo: predice con la mejor tasa de SU signo, ruidosa, porque no se le deja mezclarse con series sin señal
+   M_signo_mixto          flags de ambos signos              dos modelos marcan al mismo cliente en sentidos opuestos: se queda solo y se cuenta; debería ser ≈ 0
+   D_sin_historia         sin historia (solo proyección)     no hay tasa que estimar: cascada celda → global; la banda es la binomial
+   N_sin_impacto          sin proyección (solo historia)     nada que predecir; se conserva para el backtest y los pools
+   T_universo_ts          universo time_series               reservado: solo etiquetado, forecast por cascada
+[1.3] collapse route of the mandatory dims (first to collapse → last): region
+[1.4] the mandatory-only view (one rate per cell) vs the segmented series, walk-forward over 12 months: segmenting saves $10,989 net · segmented is closer in 50% of cell-months
+[1.4] where segmenting pays: 1 of 2 cells with positive saving hold $10,989; the 1 others cost $-0 (net $10,989)
+   cell · saving $ · % months segmented wins · mix risk pp (composition) · behaviour pp
+   NA                                       $     10,989    92%   0.43   3.74
+   EU                                       $          0     8%   0.00   2.14
+[1.4] composition: 7% of the month-to-month movement of cell rates is the mix of the pipeline, not behaviour (Σ|composición| / (Σ|composición| + Σ|comportamiento|) over every cell-month of the window)
+       > A cell's rate can move because its people renew differently (behaviour) or because different people fall due this month (composition).
+       > Kitagawa splits each month's change into the two. A high composition share means the aggregate rate is not a behaviour to forecast:
+       > it is the mix of the known pipeline applied to the rates of its parts — which is exactly what predicting by series and summing does.
+[1.4] signals: realized rate by sign {'mixed': 0.605, 'neg': 0.384, 'neutral': 0.738, 'pos': 0.953} (the flags carve the risky and the safe customers out of the cohorts)
 ══════════════════════════════════════════════════════════════════════════ 
-PHASE 2 — dynamics
-[2] dynamics on 12 estimation ids · gates {'apto_promedio': 7, 'soporte': 3, 'estacional': 2} · phi median 1.72 · 7 with an engine (phi > 1.5)
-   EU|0|0|0|0|A|web             estacional phi=5.11  amp=11.7pp slope=-0.25pp/yr  cycles=3
-   EU|SIG=neutral|A|*           estacional phi=5.21  amp=11.7pp slope=-0.2pp/yr  cycles=3
+PHASE 2 — seasonality benchmark (big series) and pool reference   (previous section 0.5 s)
+[bench 1] 4 series selected (top 5 by projected money inside 4 groups of region × product; neutral, support ≥ 100 in every closed month, ≥ 24 months) · they carry 88.7% of the projected pipeline · 0 with short history
+[2] SEASONALITY BENCHMARK · big neutral series, fully segmented (behaviour, not composition)
+   sample: 4 series · 88.7% of the projected pipeline · thresholds: amplitude ≥ 2.0 pp, consistency ≥ 67%, shape must improve the recent level ≥ 10% at h=6 and not worsen it at h=1
+   seasonal: 1 series = 36.9% of the sample's money · trending: 1 series = 18.4% · flags with a consistent month pattern: 0 cell×flag×month rows
+   series · φ · amplitude pp (high/low month) · consistency · shape vs level h1 / h6 · $ impact · verdict
+   EU|0|0|0|0|A|web                                         φ=  5.32 amp=11.84 (4/11) cons=1.0/1.0 z=3.38/-3.84 mejora +77%/+61% $1,875 → ESTACIONAL
+   NA|0|0|0|0|B|web                                         φ=  1.56 amp= 6.78 (8/1) cons=0.67/1.0 z=1.35/-1.1 mejora +18%/-23% $976 → meses extremos no consistentes entre años; la forma no mejora ≥ 10% a h=6
+   EU|0|0|0|0|B|web                                         φ=  1.35 amp= 4.15 (10/8) cons=0.67/1.0 z=0.6/-0.75 mejora -50%/-46% $658 → meses extremos no consistentes entre años; meses extremos dentro del ruido (|z| < 1.0); la forma no mejora ≥ 10% a h=6; la forma empeora a h=1 · tendencia -6.31 pp/año
+   NA|0|0|0|0|A|web                                         φ=  1.76 amp= 4.65 (7/12) cons=1.0/1.0 z=1.31/-1.17 mejora -24%/+4% $223 → la forma no mejora ≥ 10% a h=6; la forma empeora a h=1
+   DECISION: seasonality in 1 series (37% of the sample's money): month effects in THOSE series only
+       > φ = variance of the monthly rate around its trend ÷ the variance sampling alone would produce: 1 = the rate only samples; 5 = something real moves it.
+       > amplitude = highest month effect − lowest, in pp, from a regression with month dummies weighted by n; consistency = share of years in which that month keeps its sign.
+       > The decisive test is predictive: does 'recent level + month effect' beat 'recent level' on the last 6 closed months? Significance (LRT) is reported but never decides:
+       > with thousands of contracts everything is significant; what matters is money (amplitude × the pipeline of the extreme months) and consistency.
+[2] pool reference: 12 estimation ids · 9 with support · 1 with month effects (the benchmark's seasonal series)
 ══════════════════════════════════════════════════════════════════════════ 
-PHASE 3 — backtest, technique, bands
-[3] backtest: 42,480 predictions · 12 estimation ids · 36 target months · horizons [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-[3] leaderboard (mean |error| in binomial units; 1.0 = one sampling error):
-   T7_seasonal_idx       1.15   mean + additive seasonal index (logit)
-   T6_same_month         1.15   mean of the same calendar month
-   T11_holt_winters      1.25   Holt-Winters additive on logit, damped
-   T12_theta             1.40   Theta: damped trend + SES
-   T4_ewma               1.46   exponentially weighted mean, half-life 3
-   T9_ses                1.47   simple exponential smoothing
-   T3_ma6                1.49   moving average, 6 months
-   T3_ma3                1.54   moving average, 3 months
-   T14_temporal_cred     1.54   recent window with temporal credibility
-   T2_mean               1.63   mean of the whole history (challenger)
-   T0_naive              1.67   last observed month
-[3] champions: {'T2_mean': 8, 'T7_seasonal_idx': 2, 'T12_theta': 2} · 33% beat the challenger
-[3] HOLD-OUT (months ≥ 2026-01): chosen technique per id
-   h=1: mean |error| 4.51 pp · 95% inside their band · 86 predictions
-   h=2: mean |error| 4.50 pp · 95% inside their band · 86 predictions
-   h=3: mean |error| 4.57 pp · 100% inside their band · 86 predictions
-   h=4: mean |error| 4.59 pp · 99% inside their band · 86 predictions
-   h=5: mean |error| 4.66 pp · 100% inside their band · 86 predictions
-   h=6: mean |error| 4.83 pp · 100% inside their band · 86 predictions
-   h=7: mean |error| 4.95 pp · 98% inside their band · 86 predictions
-   h=8: mean |error| 5.05 pp · 98% inside their band · 86 predictions
-   h=9: mean |error| 5.05 pp · 99% inside their band · 86 predictions
-   h=10: mean |error| 5.05 pp · 98% inside their band · 86 predictions
-   h=11: mean |error| 5.23 pp · 98% inside their band · 86 predictions
-   h=12: mean |error| 5.48 pp · 98% inside their band · 86 predictions
-   h=13: mean |error| 5.54 pp · 98% inside their band · 86 predictions
-   h=14: mean |error| 5.56 pp · 98% inside their band · 86 predictions
-   h=15: mean |error| 5.66 pp · 97% inside their band · 86 predictions
-   h=16: mean |error| 6.00 pp · 95% inside their band · 86 predictions
+PHASE 3 — backtest, technique, bands   (previous section 0.8 s)
+[3] backtest_pred persisted for champions + challenger only: 456 of 1,536 rows (backtest_persist='chosen'; the full table stays in results['backtest']['backtest_long'])
+[3] backtest: 1,536 predictions · 9 estimation ids with support · 12 target months · screened at h=[1, 6], judged at h=[1, 6]
+[3] leaderboard by horizon band (mean |error| in binomial units; 1.0 = one sampling error):
+   technique                      corto   medio_largo
+   T15_level_seasonal              1.06          1.44
+   T9_ses                          1.41          1.65
+   T10_holt_damped                 1.41          1.64
+   T3_ma3                          1.43          1.70
+   T4_ewma                         1.44          1.67
+   T3_ma6                          1.51          1.66
+   T14_temporal_cred               1.72          1.86
+   T2_mean                         1.99          2.09
+[3] champions corto  {'T3_ma3': 5, 'T10_holt_damped': 2, 'T15_level_seasonal': 1, 'T4_ewma': 1} · 44% beat the challenger
+[3] champions medio_largo {'T10_holt_damped': 5, 'T15_level_seasonal': 1, 'T4_ewma': 1, 'T2_mean': 1, 'T3_ma3': 1} · 89% beat the challenger
+       > A binomial unit = the sampling error of the month being predicted (√(p(1−p)/n) of that pool that month). 1.0 is the floor no method can beat;
+       > 2.0 means the technique misses by twice what chance alone would. Scores are comparable across pools of 50 and of 5,000 contracts because of this scaling.
+       > 'corto' = predicting next month with data up to the previous one; 'medio_largo' = predicting with data up to six months before. The challenger (T3_ma3) is 'the last quarter';
+       > a champion must beat it by the band's margin (0.10 units near; a tie is enough far away, where more memory wins). Decisions use only the months BEFORE the exam.
+[3] candidates to look at in detail (open with sheet("<id_estimacion>", configuration)):
+   shape pays far out    EU|0|0|0|0|A|web                                             T15_level_seasonal   gains 1.57 binomial units over the challenger at medio_largo · n≈600
+   shape pays far out    EU|SIG=neutral|A|*                                           T2_mean              gains 1.27 binomial units over the challenger at medio_largo · n≈612
+   shape pays far out    EU|SIG=neutral|B|*                                           T10_holt_damped      gains 0.21 binomial units over the challenger at medio_largo · n≈310
+   horizon matters       EU|SIG=neutral|A|*                                           T10_holt_damped      near, T2_mean far · n≈612
+   horizon matters       NA|0|0|0|0|B|web                                             T4_ewma              near, T3_ma3 far · n≈444
+   horizon matters       EU|SIG=neutral|B|*                                           T3_ma3               near, T10_holt_damped far · n≈310
+[3] HOLD-OUT (months ≥ 2026-02): chosen technique per id · |error| plain and weighted by units (≈ money) · signed bias (− = under-forecast)
+   h= 1: |error| 3.17 pp · weighted 2.55 pp · bias -0.20 pp · 87% inside band · 54 predictions
+   h= 6: |error| 3.04 pp · weighted 2.38 pp · bias -0.42 pp · 94% inside band · 54 predictions
+[3] HOLD-OUT OF THE TOTAL (months ≥ 2026-02, all pools summed, units-weighted): the error of the aggregate month
+   h= 1: |error of the total| 1.74 pp · bias -0.19 pp · worst month 3.58 pp · 6 months
+   h= 6: |error of the total| 1.50 pp · bias -0.40 pp · worst month 2.08 pp · 6 months
+       > The hold-out is the exam: months never used to choose techniques or to measure bands, predicted as if unknown and compared with what happened.
+       > 'inside band' should be close to 90 % if the band is honest (a 90 % band): far above = too wide, far below = too narrow.
+       > 'bias' with a sign = we systematically over- (+) or under-forecast (−); a bias that grows with h says the level moved and history lags behind.
+       > The TOTAL's error is what the business will see: pools that miss together do not cancel, which is why it is measured separately from the per-pool error.
+[3] COMMON ERROR BAND (aggregate error over the decision months < 2026-02, p5/p95 per h): what pools missing TOGETHER costs; added to the per-pool quadrature in the total's band
+   h= 1: -1.64 / +3.36 pp · bias +1.19 pp · 6 months
+   h= 6: -0.65 / +3.80 pp · bias +2.27 pp · 6 months
 ══════════════════════════════════════════════════════════════════════════ 
-PHASE 4 — uplift
+PHASE 4 — uplift   (previous section 0.3 s)
 [4] uplift: 3 cells · range [1.03, 1.50] · 0 cells below the floor ({'propia': 3}) · 0 clipped at the cap 3.0
 ══════════════════════════════════════════════════════════════════════════ 
-PHASE 5 — assembly, extended horizon, bands
-[5] extended horizon 2027-01 → 2027-12: 196 simulated rows · acquisition factor global 1.429 (per-series for 16 series) · re-entry after 12 months
-[5] forecast: $548,448 over 16 months · rate origin {'celda': 2.4, 'serie': 97.6} · technique origin {'campeon': 57.2, 'default': 2.4, 'retador': 40.4}
+PHASE 5 — assembly, extended horizon, bands   (previous section 0.1 s)
+[5] extended horizon: re-entries of projection-month renewals up to 2027-12 (366 simulated rows; known pipeline ends 2026-12) · acquisition factor global 1.429 (per-series for 16 series) · re-entry after [12] months · valued at the renewed price (AUV × uplift)
+[5] forecast: $634,155 over 17 months · rate origin {'celda': 2.1, 'serie': 97.9} · technique origin {'campeon': 73.6, 'default': 2.8, 'retador': 23.5}
 [5] month · expected · band (asymmetric) · % from simulated pipeline
-   2026-09  $     34,290    -4.8% /  +4.7%  simulated   0.0%  
-   2026-10  $     34,811    -4.8% /  +4.7%  simulated   0.0%  
-   2026-11  $     33,709    -4.9% /  +4.9%  simulated   0.0%  
-   2026-12  $     34,940    -4.7% /  +4.8%  simulated   0.0%  
-   2027-01  $     34,409    -4.7% /  +4.8%  simulated 100.0%  
-   2027-02  $     36,635    -4.7% /  +4.8%  simulated 100.0%  
-   2027-03  $     34,198    -4.8% /  +5.0%  simulated 100.0%  
-   2027-04  $     36,649    -4.6% /  +5.0%  simulated 100.0%  
-   2027-05  $     35,696    -4.9% /  +5.2%  simulated 100.0%  
-   2027-06  $     35,112    -4.8% /  +5.2%  simulated 100.0%  
-   2027-07  $     31,789    -5.1% /  +5.4%  simulated 100.0%  
-   2027-08  $     33,533    -5.1% /  +5.5%  simulated 100.0%  
-   2027-09  $     33,421    -5.3% /  +5.8%  simulated 100.0%  
-   2027-10  $     33,384    -5.7% /  +5.8%  simulated 100.0%  
-   2027-11  $     32,331    -6.2% /  +5.8%  simulated 100.0%  
-   2027-12  $     33,541    -6.1% /  +5.8%  simulated 100.0%  
-══════════════════════════════════════════════════════════════════════════
-VALIDATION PANEL
-  ✓ [INTEGRITY] pipeline USD conserved fine ↔ units                     0.0   (= 0)
-  ✓ [INTEGRITY] fu_id unique in forecast units                            0   (= 0)
-  ✓ [INTEGRITY] fu_key unique (no hash collision)                         0   (= 0)
-  ✓ [INTEGRITY] raw → key_bridge coverage                            100.0%   (= 100%)
-  ✓ [INTEGRITY] fu_comb_key unique in the bridge                          0   (= 0)
-  ✓ [DOCTRINE ] projection rows carry no results                          0   (= 0)
-  ✓ [DOCTRINE ] current month is projection                               0   (= 0)
-  ✓ [DOCTRINE ] forecast without NaN                                      0   (= 0)
-  ✓ [DOCTRINE ] rate under the cap                                        0   (= 0)
-  ✓ [DOCTRINE ] uplift positive                                           0   (= 0)
-  • [QUALITY  ] $ forecast with its own series rate                     98%   (informational)
-  ✓ [QUALITY  ] $ falling to the global mean                           0.0%   (≈ 0%)
-  • [QUALITY  ] $ forecast with a champion technique                    57%   (informational)
-  • [QUALITY  ] $ built on simulated pipeline                           75%   (informational)
-  ✓ [QUALITY  ] rows with a measured band                               94%   (→ 100%)
-  ✓ [QUALITY  ] total band narrowing with the horizon (mix)               0   (= 0 months beyond tolerance)
-  • [QUALITY  ] mixed-sign series                                  1 ($480)   (≈ 0)
-  • [QUALITY  ] signed series under the floor                      1 ($720)   (informational)
-  ✓ [DOCTRINE ] signed series never climb above their cell                0   (= 0)
-  ✓ [DOCTRINE ] neutral series never pooled with a sign                   0   (= 0)
-  ✓ [QUALITY  ] hold-out calibration (inside band)                      98%   (≈ 90%)
-  • [QUALITY  ] hold-out mean |error| at h=1                        4.51 pp   (informational)
-  ✓ [QUALITY  ] uplift in plausible range                                 0   (= 0 cells outside [0.3, 3.0])
+   2026-08  $     34,873    -4.8% /  +6.1%  simulated   0.0%  
+   2026-09  $     34,180    -5.4% /  +8.5%  simulated   0.0%  
+   2026-10  $     34,708    -5.3% /  +8.4%  simulated   0.0%  
+   2026-11  $     33,665    -5.5% /  +8.6%  simulated   0.0%  
+   2026-12  $     34,846    -5.3% /  +8.3%  simulated   0.0%  
+   2027-01  $     39,120    -6.1% /  +8.9%  simulated 100.0%  
+   2027-02  $     40,940    -6.0% /  +8.9%  simulated 100.0%  
+   2027-03  $     38,636    -6.2% /  +9.1%  simulated 100.0%  
+   2027-04  $     41,504    -5.8% /  +8.6%  simulated 100.0%  
+   2027-05  $     39,862    -6.1% /  +9.2%  simulated 100.0%  
+   2027-06  $     39,733    -6.1% /  +9.2%  simulated 100.0%  
+   2027-07  $     35,479    -6.4% /  +9.5%  simulated 100.0%  
+   2027-08  $     38,121    -6.3% /  +9.7%  simulated 100.0%  
+   2027-09  $     37,369    -6.6% /  +9.9%  simulated 100.0%  
+   2027-10  $     37,328    -6.6% /  +9.9%  simulated 100.0%  
+   2027-11  $     36,281    -6.8% / +10.2%  simulated 100.0%  
+   2027-12  $     37,512    -6.5% /  +9.9%  simulated 100.0%  
+[5] PIPELINE SUMMARY · what we predict; the band to promise = idiosyncratic (pools independent) ⊕ common (pools missing together)
+   block · months · pipeline $ · expected $ · TOTAL band · idiosyncratic · common · binomial floor · worst case · simulated · level A · realized |err| h<=4 (pool · total · worst month)
+   resto_2026     5  $     242,100  $     172,272  -2.7%/+6.7% ($11,499)  idio -2.4%/+3.6%  common -1.3%/+5.6%  floor ±1.2%  worst ±8.6%  sim 0%  A 92%  2.55 · 1.74 · 3.58 pp
+   ano_2027      12  $     634,834  $     461,884  -2.0%/+6.3% ($29,190)  idio -1.8%/+2.7%  common -1.0%/+5.7%  floor ±0.8%  worst ±10.7%  sim 100%  A 94%  2.55 · 1.74 · 3.58 pp
+   total         17  $     876,934  $     634,155  -1.8%/+6.1% ($38,670)  idio -1.5%/+2.2%  common -1.1%/+5.7%  floor ±0.7%  worst ±10.1%  sim 73%  A 94%  2.55 · 1.74 · 3.58 pp
+       > TOTAL band = the band to promise ('if nothing changes, 9 times out of 10 the result is inside'). It combines two parts:
+       > idiosyncratic = each pool missing by its own luck, which cancels across thousands of pools (added in quadrature: √Σerror²), and
+       > common = the whole portfolio missing in the same direction (a price move, a campaign), measured as the error of the total in the decision months and NOT cancelled.
+       > floor = pure sampling of every unit with its own n (nobody beats it); worst case = every unit missing by its full sampling margin in the same direction (cannot really happen).
+       > realized = what actually happened in the exam months: per pool (weighted by units), for the total, and the worst month of the total.
+[5] BUSINESS ANSWERS · per year: what is already real, what we forecast, and on which pipeline
+   2026  renewed (closed months) $      250,183 (7 months)  + forecast $      172,272 (5 months, of which the pending month $34,873 vs $34,777 already booked)  = $      422,455  band -4,609 / +11,499
+         pipeline to renew: real $242,100 · projected (our own forecast re-entering) $0 · simulated (acquisition at the historical pace) $0 → forecast on each: $172,272 / $0 / $0
+   2027  renewed (closed months) $            0 (0 months)  + forecast $      461,884 (12 months, of which the pending month $0 vs $0 already booked)  = $      461,884  band -9,491 / +29,190
+         pipeline to renew: real $0 · projected (our own forecast re-entering) $424,845 · simulated (acquisition at the historical pace) $209,989 → forecast on each: $0 / $333,358 / $128,526
+       > 'renewed (closed months)' is money already booked; 'forecast' is pipeline × probability × uplift for the pending month and the projection months.
+       > Pipeline 'real' exists today; 'proyectada' will exist if the renewals we forecast happen (they re-enter one term later); 'simulada' = the acquisition of the
+       > projection months at the historical pace. The forecast on the last two is a forecast on a forecast: label it as such when it is presented.
+[5] BY REGION (region) · expected $ · % of total · band ±% · % money at own precision (A) · % on signals · % signed under floor (S) · uplift · composition
+   EU                           $      401,903  63.4%  ±2.1%  A  91.1%  signals   3.5%  S  0.7%  uplift 1.135  composition 0%
+   NA                           $      232,253  36.6%  ±3.4%  A  98.4%  signals   0.0%  S  0.0%  uplift 1.030  composition 10%
+       > One row per region: the money to renew, the forecast, the band, and the four things that tell where to act — how much of the money predicts with
+       > its own precision (A), how much rides on churn signals, how much has a signal but no pool (S), and how much of the movement of its cells is composition.
+       > ESTRATEGIA_POR_REGION.md reads this table into a strategy: what to defend, where to invest in data, where to run campaigns.
+[5] BASELINE (the spreadsheet forecast: dollar renewal rate of the last N months × future pipeline) vs the framework
+   grain · window   2026: baseline / framework / diff  2027: baseline / framework / diff   walk-forward |err| lag1 (bias) · lag4 (bias)
+   global                        1m  2026: $170,628 / $172,272 / -0.9%  2027: $447,420 / $461,884 / -3.1%   3.2% (+0.7) · 5.0% (+1.3)
+   global                        3m  2026: $178,237 / $172,272 / +3.5%  2027: $467,372 / $461,884 / +1.2%   3.2% (+0.9) · 4.7% (+1.7)
+   global                       12m  2026: $179,762 / $172,272 / +4.3%  2027: $471,373 / $461,884 / +2.0%   3.7% (+2.6) · 4.1% (+3.7)
+   mandatory                     1m  2026: $170,291 / $172,272 / -1.1%  2027: $443,448 / $461,884 / -4.0%   3.3% (+0.7) · 4.9% (+1.3)
+   mandatory                     3m  2026: $178,359 / $172,272 / +3.5%  2027: $464,353 / $461,884 / +0.5%   3.3% (+1.0) · 4.6% (+1.8)
+   mandatory                    12m  2026: $180,098 / $172,272 / +4.5%  2027: $469,212 / $461,884 / +1.6%   3.8% (+2.7) · 4.2% (+3.9)
 ══════════════════════════════════════════════════════════════════════════ 
-✓ analysis complete · decisions and tables in /tmp/v3run
+SHEETS — the 5 series with the most projected money
+   EU|0|0|0|0|A|web                                                       $       79,200  →  /tmp/v3run/diagnostics/sheet_EU_0_0_0_0_A_web.png
+   NA|0|0|0|0|B|web                                                       $       72,000  →  /tmp/v3run/diagnostics/sheet_NA_0_0_0_0_B_web.png
+   EU|0|0|0|0|B|web                                                       $       39,600  →  /tmp/v3run/diagnostics/sheet_EU_0_0_0_0_B_web.png
+   NA|0|0|0|0|A|web                                                       $       24,000  →  /tmp/v3run/diagnostics/sheet_NA_0_0_0_0_A_web.png
+   EU|0|0|0|0|A|kiosk                                                     $        7,500  →  /tmp/v3run/diagnostics/sheet_EU_0_0_0_0_A_kiosk.png
+══════════════════════════════════════════════════════════════════════════ 
+VALIDATION   (previous section 5.7 s)
+VALIDATION PANEL
+  ok   [INTEGRITY] pipeline USD conserved fine ↔ units                     0.0   (= 0)
+  ok   [INTEGRITY] fu_id unique in forecast units                            0   (= 0)
+  ok   [INTEGRITY] fu_key unique (no hash collision)                         0   (= 0)
+  ok   [INTEGRITY] raw → key_bridge coverage                            100.0%   (= 100%)
+  ok   [INTEGRITY] fu_comb_key unique in the bridge                          0   (= 0)
+  ok   [DOCTRINE ] projection rows carry no results                          0   (= 0)
+  ok   [DOCTRINE ] current month is projection                               0   (= 0)
+  ok   [DOCTRINE ] forecast without NaN                                      0   (= 0)
+  ok   [DOCTRINE ] rate under the cap                                        0   (= 0)
+  ok   [DOCTRINE ] uplift positive                                           0   (= 0)
+  warn [QUALITY  ] $ forecast with its own series rate                     98%   (informational)
+  ok   [QUALITY  ] $ falling to the global mean                           0.0%   (≈ 0%)
+  warn [QUALITY  ] $ forecast with a champion technique                    74%   (informational)
+  warn [QUALITY  ] $ built on simulated pipeline                           73%   (informational)
+  ok   [QUALITY  ] rows with a measured band                               85%   (towards 100%)
+  ok   [QUALITY  ] total band narrowing with the horizon (mix)               0   (= 0 months beyond tolerance)
+  warn [QUALITY  ] mixed-sign series                                  1 ($600)   (≈ 0)
+  warn [QUALITY  ] signed series under the floor                      1 ($900)   (informational)
+  warn [QUALITY  ] signed series climbing above their cell (sign kept)              0   (allowed: cumulative loss ≤ 0.05)
+  ok   [DOCTRINE ] neutral series never pooled with a sign                   0   (= 0)
+  ok   [QUALITY  ] hold-out calibration (inside band)                      91%   (≈ 90%)
+  warn [QUALITY  ] hold-out mean |error| at h=1                        3.17 pp   (informational)
+  ok   [QUALITY  ] uplift in plausible range                                 0   (= 0 cells outside [0.3, 3.0])
+══════════════════════════════════════════════════════════════════════════ 
+analysis complete · decisions and tables in /tmp/v3run

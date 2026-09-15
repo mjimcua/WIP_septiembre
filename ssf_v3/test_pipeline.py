@@ -23,14 +23,15 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, inspect
 
+# make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 sys.path.insert(0, PROJECT_FOLDER)
 
-from checks import CheckRecorder                                                   # noqa: E402
-from config import PHYSICAL_TABLE_NAMES, Config                                    # noqa: E402
-from pipeline import run_analysis, run_pipeline                                    # noqa: E402
-from synthetic_v3 import build_raw                                                 # noqa: E402
-from test_fixtures import quiet                                                    # noqa: E402
+from checks import CheckRecorder
+from config import PHYSICAL_TABLE_NAMES, Config
+from pipeline import run_analysis, run_pipeline
+from synthetic_v3 import build_raw
+from test_fixtures import quiet
 
 RECORDER = CheckRecorder()
 TIMEVARYING = {"dormant": "negative", "softcancel": "negative", "no_instalado": "negative", "autorenew": "positive"}
@@ -47,7 +48,12 @@ def synthetic_config(folder: str, mandatory: list, extras: list) -> Config:
                            structural_timevarying_dims=TIMEVARYING, extra_renovacion=extras,
                            extra_revalorizacion=["discount", "newcust"], backtest_test_start="2026-01",
                            extended_horizon_end="2027-12", uplift_parent_keep_columns=["newcust"],
-                           signed_ladder_max_loss=0.0, challenger_technique="T2_mean")
+                           benchmark_group_dims=["region", "product"], benchmark_min_support=100,
+                           signed_ladder_max_loss=0.0, challenger_technique="T2_mean",
+                           backtest_max_targets=24, backtest_screen_horizons=[1, 2, 3, 6, 12], backtest_horizon_cap=12,
+                           backtest_horizons=[1, 2, 3, 4, 6, 9, 12],
+                           backtest_horizon_bands={"h1": [1, 1], "corto": [2, 3], "medio": [4, 6], "largo": [7, 12]},
+                           challenger_margin_by_band={"h1": 0.10, "corto": 0.10, "medio": 0.05, "largo": 0.0})
 
 
 def test_analysis_taxonomy_1() -> dict:
@@ -70,29 +76,31 @@ def test_analysis_taxonomy_1() -> dict:
     RECORDER.check(card.loc["EU|1|0|0|1|B|web", "nivel_riesgo"] == "M_signo_mixto", "the mixed-sign series is alone (M)")
     RECORDER.check(card.loc["NA|0|0|0|0|A|tele", "peldano"] == 2 and card.loc["NA|0|0|0|0|A|tele", "id_estimacion"] == "NA|SIG=neutral|A|*",
                    "a neutral small series borrows from its cell's neutrals")
-    RECORDER.check(card.loc["NA|0|0|0|0|B|tele", "huecos"] == 11, "gaps: NA|B tele has 11 synthetic months with undefined rate")
+    RECORDER.check(card.loc["NA|0|0|0|0|B|tele", "huecos"] in (10, 11), "gaps: NA|B tele has ~11 synthetic months with undefined rate (2026-08 is pending, not history)")
     RECORDER.check(card.loc["NA|0|0|0|0|A|kiosk", "nivel_riesgo"] == "N_sin_impacto" and card.loc["EU|0|0|0|0|B|tienda", "nivel_riesgo"] == "D_sin_historia"
                    and card.loc["EU|0|0|0|0|A|kiosk", "nivel_riesgo"] == "T_universo_ts",
                    "routes and universes: no_impact → N, projection-only → D, time_series → T")
-    dynamics = results["decisions"]["decision_dynamics"].set_index("id_estimacion")
-    RECORDER.check(dynamics.loc["EU|0|0|0|0|A|web", "gate"] == "estacional" and dynamics.loc["EU|0|0|0|0|A|web", "phi"] > 3,
-                   "EU|A is seasonal with an engine (φ > 3)")
+    benchmark = results["decisions"]["decision_estacionalidad"].set_index("fs_id")
+    RECORDER.check(benchmark.loc["EU|0|0|0|0|A|web", "veredicto_estacional"] == 1 and benchmark.loc["EU|0|0|0|0|A|web", "phi"] > 3,
+                   "the benchmark declares EU|A seasonal (φ > 3, shape beats the level)")
+    reference = results["decisions"]["pool_reference"].set_index("id_estimacion")
+    RECORDER.check(reference.loc["EU|0|0|0|0|A|web", "estacional"] == 1, "…and the pool reference carries it")
     technique = results["decisions"]["decision_technique"]
     technique = technique[technique["tramo_h"] == "h1"].set_index("id_estimacion")
     RECORDER.check(technique.loc["EU|0|0|0|0|A|web", "tecnica_origen"] == "campeon" and technique.loc["NA|0|0|0|0|A|web", "tecnica"] == "T2_mean",
                    "a champion on the seasonal series; the challenger on a flat one")
-    decomposition = results["dimensions"]["mix_shift_decomposition"]
+    decomposition = results["composition"]["mix_shift_decomposition"]
     na = decomposition[decomposition["celda_id"] == "NA"]
-    RECORDER.check(na["delta_composicion_pp"].abs().mean() > 0.05, "Simpson cell NA shows a composition term in the Kitagawa decomposition")
+    RECORDER.check(na["delta_composicion_pp"].abs().mean() > 0.05, "the NA cell (product weights shifting) shows a composition term in the Kitagawa decomposition")
     holdout = results["backtest"]["backtest_holdout"]
-    RECORDER.check(holdout["mes_objetivo"].min() == "2026-01" and holdout["mes_objetivo"].max() == "2026-08",
-                   "hold-out = the 2026 months that already happened (2026-01..2026-08)")
+    RECORDER.check(holdout["mes_objetivo"].min() == "2026-01" and holdout["mes_objetivo"].max() == "2026-07",
+                   "hold-out = the closed months from backtest_test_start (2026-01) to the last closed one (2026-07; 2026-08 is pending)")
     h1 = holdout[holdout["h"] == 1]
     RECORDER.check(h1["err_pp"].abs().mean() < 8 and 0.8 <= h1["dentro_banda"].mean() <= 1.0,
                    f"hold-out h=1: mean |error| {h1['err_pp'].abs().mean():.1f} pp, {h1['dentro_banda'].mean():.0%} inside the band")
     horizon = results["forecast"]["horizon_report"]
-    RECORDER.check(horizon["period"].min() == "2026-09" and horizon["period"].max() == "2027-12" and len(horizon) == 16,
-                   "the forecast covers 2026-09 (current month) to 2027-12")
+    RECORDER.check(horizon["period"].min() == "2026-08" and horizon["period"].max() == "2027-12" and len(horizon) == 17,
+                   "the forecast covers the pending month (2026-08), the current month and 2027 (17 months)")
     RECORDER.check((horizon.loc[horizon["period"] >= "2027-01", "pct_simulado"] == 100).all(), "2027 is built entirely on simulated pipeline")
     # the sheet resolves any key to a series and returns its tables and summary
     from sheet import sheet

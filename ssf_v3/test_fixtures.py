@@ -24,12 +24,15 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine
 
+# The project is a flat folder imported from notebooks and scripts alike: make sure the
+# folder of this file is importable BEFORE importing the sibling modules below (that is
+# why those imports come after this block, not at the top).
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
-from config import Config                                    # noqa: E402
-import raw_data_validation                                   # noqa: E402
+from config import Config
+import raw_data_validation
 
 LADDER_TAXONOMY = dict(business_mandatory_dims=["region"],
                        structural_timevarying_dims={"softcancel": "negative", "autorenew": "positive"},
@@ -92,10 +95,14 @@ def ladder_config(temporary_directory: str, **overrides) -> Config:
     """A LadderConfig writing to a sqlite in the temporary directory."""
     engine = create_engine(f"sqlite:///{os.path.join(temporary_directory, 'test.db')}")
     arguments = dict(LADDER_TAXONOMY)
-    arguments.update(dict(sql_engine=engine, sql_schema=None, outdir=temporary_directory, backtest_test_start="2025-07",
+    arguments.update(dict(sql_engine=engine, sql_schema=None, outdir=temporary_directory, backtest_test_start="2025-10",
+                          pending_close_months=0,      # the fixture's last month is closed
                           own_rate_floor=30.0,         # the six-series ladder was designed with one floor
                           signed_ladder_max_loss=0.0,  # and with the strict sign rule
-                          challenger_technique="T2_mean"))   # and the mean as challenger
+                          challenger_technique="T2_mean",   # and the mean as challenger
+                          backtest_max_targets=24, backtest_screen_horizons=[1, 2, 3, 6, 12], backtest_horizon_cap=12,
+                          backtest_horizon_bands={"h1": [1, 1], "corto": [2, 3], "medio": [4, 6], "largo": [7, 12]},
+                          challenger_margin_by_band={"h1": 0.10, "corto": 0.10, "medio": 0.05, "largo": 0.0}))
     arguments.update(overrides)
     return LadderConfig(**arguments)
 

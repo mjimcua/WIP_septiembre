@@ -30,32 +30,45 @@ suelo de soporte: 30.
 
 ## 2 · Cuadratura: cómo se suman los errores
 
-**Problema.** El forecast total es una suma de muchas piezas, cada una con su banda. ¿Cuál
-es la banda de la suma? No es la suma de las bandas.
+**Primero, lo que sí hacemos.** Cada pool tiene su intervalo de confianza de la tasa (los
+cuantiles de su error medido en el backtest) y ese intervalo se convierte en dinero
+fila a fila: tasa ± banda × dólares que vencen × uplift. Hasta ahí, exactamente lo que
+propones. La pregunta es la siguiente: tengo 2.000 piezas, cada una con su intervalo en
+dólares; ¿cuál es el intervalo de la suma?
 
-**Regla.** Si dos errores son **independientes**, sus varianzas se suman y el error de la
-suma es la raíz de la suma de cuadrados: `e = √(e₁² + e₂²)`. Eso es "en cuadratura". Si
-los errores son el **mismo** error (dos filas que usan la misma tasa se equivocan a la
-vez y en el mismo sentido), se suman linealmente: `e = e₁ + e₂`.
+**La intuición, con dos piezas.** Dos pools, cada uno puede fallar ±$10.000. Si sumo los
+intervalos, la suma puede fallar ±$20.000. Pero eso solo ocurre si los dos fallan a la
+vez, en la misma dirección y por el máximo. Si cada uno falla por su cuenta (uno se
+pasa, el otro se queda corto), lo normal es que se compensen en parte: el fallo típico
+de la suma es √(10.000² + 10.000²) = $14.100, no $20.000. Eso es "en cuadratura": los
+errores independientes se suman por sus cuadrados, como los catetos de un triángulo.
 
-**Ejemplo.** Dos series con bandas ±$3.000 y ±$4.000:
-- independientes → √(9 + 16) = **±$5.000** (no ±7.000);
-- misma tasa (comparten `id_estimacion` y mes) → **±$7.000**.
-Con 1.646 series de nivel A de ±3,9 pp cada una, el error relativo del total baja hacia
-3,9 / √1.646 ≈ 0,1 pp si fueran iguales e independientes. Por eso el agregado de muchas
-series bien soportadas es más preciso que cualquiera de ellas — y por eso los agregados
-suman errores *solo* cuando comparten la causa.
+**Con muchas piezas se nota mucho más.** 100 pools de ±$10.000 cada uno: sumando
+intervalos, ±$1.000.000; en cuadratura, √100 × 10.000 = ±$100.000. Diez veces menos.
+Con 2.000 pools, 45 veces menos. Por eso la banda del total salía de ±0,25 %: es
+matemáticamente correcta **si** los 2.000 pools fallan cada uno por su cuenta.
 
-**Cómo se aplica.** `aggregate_with_bands`: primero suma LINEAL dentro de cada
-(`id_estimacion`, mes) — las filas que comparten tasa —, después CUADRATURA entre grupos.
-El mismo criterio en la banda de cada fila: el error del pool y el muestreo de la fila son
-independientes → `√((q·se_pool)² + (z·se_fila)²)`. Y en la estimación por credibilidad:
-`se_est = √((z·se_propio)² + ((1−z)·se_pariente)²)`.
+**Y ahí está la trampa.** No fallan del todo por su cuenta. Una subida de precios, una
+campaña, un cambio de mercado mueven muchos pools a la vez y en el mismo sentido. El
+sesgo del hold-out (todos los pools quedándose cortos a horizontes largos) lo demuestra.
+Ese error común no se compensa: se suma linealmente, como en el primer caso.
 
-**Dónde.** `run_forecast_assembly.py` (`aggregate_with_bands`, `forecast_bands`),
-`run_support_ladder.py` (`estimate_rates`).
+**Lo que hace el framework, en tres pasos.**
+1. Dentro de un mismo pool y mes, las filas comparten tasa: si el pool falla, fallan
+   todas juntas → sus bandas se suman en línea.
+2. Entre pools y meses distintos, la parte **idiosincrática** (lo que cada uno falla por
+   su cuenta) se suma en cuadratura.
+3. La parte **común** se mide aparte: se suma toda la cartera por mes y horizonte, se
+   compara con el total real en los meses de decisión, y sus cuantiles por horizonte
+   son la banda común, que se aplica al dinero de cada mes y se suma en línea entre
+   meses. La banda que se promete es la combinación de la idiosincrática y la común.
 
----
+**Con números (sintético).** Idiosincrática ±1,9 %; común −2,5 / +5,0 %; total
+−3,1 / +5,3 %. El peor mes realizado del examen: 2,8 pp. Sin la parte común, la banda
+habría sido ±1,2 % y ese mes se habría salido.
+
+**Cómo se aplica.** `aggregate_with_bands` (pasos 1 y 2), `aggregate_error_bands` y
+`common_band_per_row` (paso 3), `pipeline_summary` y `business_summary` (la suma).
 
 ## 3 · Credibilidad (Bühlmann-Straub)
 
@@ -145,7 +158,7 @@ La que más separa colapsa la última. Se persiste en `decision_eta2.orden_colap
 
 ---
 
-## 5 · Mix-shift: Kitagawa y el contrafactual
+## 5 · Composición: Kitagawa y el coste de la vista solo-mandatory
 
 **Problema.** La tasa de una celda puede bajar sin que ninguna de sus series baje, solo
 porque cambian los pesos (Simpson). ¿Cuánto del movimiento es eso?
@@ -158,11 +171,11 @@ sube de 40 % a 60 %; ninguna cambia su tasa → comportamiento 0, composición �
 agregado baja del 74 % al 66 % "sin que pase nada". `mix_shift.delta_composicion_pp` es
 ese término; `riesgo_mix_pp` de una celda es su valor absoluto medio.
 
-**Contrafactual walk-forward.** Para cada celda y cada mes t de los últimos 12: solo con
+**El coste de la vista solo-mandatory (walk-forward).** Para cada celda y cada mes t de los últimos 12: solo con
 datos ≤ t−1, dos predicciones de la tasa de t: **plana** (Σren/Σpipe de la celda) y
 **segmentada** (tasa pasada de cada serie, ponderada por el pipeline *real* de t). Se
 comparan con lo que pasó; `ahorro_usd = (|err_plano| − |err_seg|) × pipeline$ de t`. No
-busca casos: mide en dinero, celda a celda, qué habría costado no segmentar.
+busca casos: mide en dinero, celda a celda, qué habría costado predecir con las mandatory solas.
 
 **Lectura de tus números.** 32 % del movimiento mes a mes es composición; segmentar
 ahorra $536k en 12 meses ganando en el 49 % de los celda-meses: gana donde hay dinero y
@@ -172,24 +185,40 @@ pierde poco en muchas celdas pequeñas. La consola ahora lo lista por celda.
 
 ---
 
-## 6 · φ: ¿se mueve la serie o solo muestrea?
+## 6 · La estacionalidad de la tasa se decide una vez: el benchmark
 
-**Cálculo.** φ = varianza observada de la tasa mensual / varianza que predice la binomial
-(p̄(1−p̄)·media(1/n_t), con el n de cada mes). φ ≈ 1: la tasa no se mueve, muestrea; la
-media es la mejor técnica. φ ≫ 1: hay un motor (estación, tendencia, régimen, mezcla
-interna) y una técnica de series temporales tiene algo que capturar.
+**Problema.** Una técnica de series temporales siempre devuelve una componente estacional,
+haya o no; y con miles de clientes cualquier test de significación sale significativo.
+¿Cómo decidir de forma defendible si la tasa tiene forma anual?
 
-**Ejemplo.** Una serie plana con n = 300: sd observada 2,4 pp, sd binomial 2,3 → φ ≈ 1,1.
-La estacional `EU|A` (±5 pp de amplitud): φ = 5,2. Y la que gana en el backtest con T7 es
-justo esa.
+**Dónde se decide.** Donde la prueba tiene potencia y la composición está controlada: las
+series grandes neutras (sin señal), segmentadas con todas las dimensiones, con ≥ 271
+clientes en todos los meses cerrados (±5 pp de suelo), top 5 por dinero en cada región ×
+producto. Lo que se mueve ahí es comportamiento, no mezcla de cartera. Si ahí no hay
+estación material, no se busca en el resto (donde además no habría soporte para medirla).
 
-**Estacionalidad y tendencia** se miden sobre la serie *sin tendencia* (una serie que baja
-dos años parece "estacional": sus eneros son más altos que sus diciembres) y se declaran
-solo si superan 2× la cota binomial del mes típico del pool.
+**Cómo se decide, por serie.** (1) φ tras quitar la tendencia lineal: cuánto se mueve más
+que el muestreo. (2) Regresión logit(tasa) ~ tendencia + dummies de mes, ponderada por n:
+la amplitud (mes alto − mes bajo, en pp) y la pendiente ± su error; el LRT se reporta y
+nunca decide. (3) Panel mes × año de residuos estandarizados: un mes es alto de verdad si
+es alto casi todos los años. (4) La prueba que decide: en los últimos 6 meses cerrados,
+"nivel reciente + efecto de mes" (T15) contra "nivel reciente" (ma3), a 1 y a 6 meses
+vista. **Estacional** si amplitud ≥ 2 pp, meses extremos consistentes ≥ 2 de 3 años, y la
+forma mejora al nivel ≥ 10 % a h=6 sin empeorarlo a h=1. **Tendencia** si |pendiente| ≥ 2
+errores estándar y ≥ 1 pp/año. Materialidad = amplitud × pipeline de los meses extremos.
 
-**Dónde.** `binomial_reference.py` (`overdispersion_phi`), `analysis_dynamics.py`.
+**La decisión para la cartera.** Si las series estacionales llevan menos del 10 % del
+dinero de la muestra: la tasa no tiene estación material; el catálogo se queda en
+técnicas de nivel. Si no: efectos de mes solo en esas series, nivel en el resto. Y una
+comprobación aparte: la proporción de clientes con cada señal por mes del año, por si la
+estación se ha mudado de la tasa a las señales.
 
----
+**Ejemplo (sintético).** `EU|A`: φ 5,3, amplitud 11,8 pp (abril/noviembre), consistencia
+1,0/1,0, la forma mejora al nivel +77 % a h=1 y +61 % a h=6 → estacional. `NA|A`:
+amplitud 4,7 pp con p-valor 0,05, pero la forma empeora al nivel a h=1 (−24 %) → no
+material. `EU|B`: tendencia −6,3 ± 0,5 pp/año, sin estación.
+
+**Dónde.** `analysis_seasonality_benchmark.py`; `pool_reference` traslada el veredicto a cada pool.
 
 ## 7 · Logit y amortiguación en las técnicas
 
@@ -201,10 +230,10 @@ al techo, y una tendencia se frena sola al acercarse a 1.
 Σφ^i (φ = 0,9): a h = 1 el 90 % de la pendiente, a h = 12 el 64 %, a h = 24 el 82 % del
 tope 9. Una serie que baja 1 pp/mes no llega a 0 en 2027: se estabiliza.
 
-**Elegibilidad.** Cada técnica declara meses mínimos y etiqueta necesaria (`dim_tecnica`):
-una serie sin estacionalidad nunca compite con T7; una con 14 meses nunca con
-Holt-Winters (24). Así se usan series temporales *cuando se puede*, sin que ganen por
-suerte cuando no.
+**El catálogo, reducido.** Siete técnicas de nivel (media, media de 3 y de 6 meses, EWMA,
+suavizado exponencial, Holt amortiguado, credibilidad temporal) y una sola con forma,
+T15 (nivel reciente + efecto de mes), que solo compite en las series que el benchmark
+declaró estacionales. Ninguna técnica decide por su cuenta que hay estación.
 
 **Dónde.** `techniques.py`.
 
@@ -212,14 +241,23 @@ suerte cuando no.
 
 ## 8 · Backtest rolling-origin y error normalizado
 
-**Cálculo.** Para cada id de estimación y cada mes objetivo t (los 24 más recientes con
-verdad), y cada horizonte h juzgado: origen = t − h; solo historia ≤ origen; cada técnica
-elegible predice t. Error con signo: `err_pp = pred − real`. **Normalizado**:
+**Dos baterías, dos visiones.** Para cada pool, los 6 meses más recientes ANTES del
+examen son los objetivos, y hay dos pruebas: la CORTA (predecir cada mes con datos hasta
+el mes anterior: h = 1) y la MEDIA-LARGA (predecir cada mes con datos hasta seis meses
+antes: h = 6). Los meses a más de seis de distancia usan la evidencia de seis y se
+vuelven a predecir cada mes. La premisa: probar con los datos más recientes posibles,
+entendiendo que hay que predecir con antelación.
+
+**Cálculo.** Para cada id de estimación y cada mes objetivo t (los 6 más recientes antes
+del examen, más los del examen), y cada horizonte h juzgado (1 y 6): origen = t − h; solo
+historia ≤ origen; cada técnica elegible predice t. Error con signo: `err_pp = pred − real`. **Normalizado**:
 `err_norm = err_pp / se_binomial(real, n_t)`. Un pool de 1.000 y otro de 35 se juzgan en
 la misma escala: 1,0 = un error de muestreo, el suelo teórico.
 
-**Dos etapas.** Cribado de todas las técnicas en h = {1, 3, 6} → campeón; luego solo
-campeón y retador en todos los horizontes → bandas. Cuesta un tercio que juzgarlo todo.
+**Un campeón por visión.** Uno para h = 1 (el mes en curso y el siguiente) y otro para
+h ≥ 2 (juzgado a seis meses). Con solo 6 objetivos, las bandas propias de un pool son
+raras (hacen falta 20 predicciones): casi todas vienen de la familia (misma técnica,
+todos los pools, mismo h), escaladas al tamaño del pool.
 
 **Un campeón por tramo de horizonte.** Una técnica que acierta el mes que viene no
 tiene por qué saber nada de enero a doce meses vista: se elige un campeón para el tramo
@@ -228,7 +266,14 @@ horizontes de cribado que caen en su tramo. La figura `technique_error_by_horizo
 enseña: la media de 3 meses gana a la izquierda y pierde a la derecha frente a una
 técnica con forma, o no, y entonces se sabe que la forma no existe.
 
-**Retador.** T2_mean (media de toda la historia). Un campeón necesita ≥ 6 predicciones y
+**Preferencia justa por la memoria a largo plazo.** Cerca, el retador (el último
+trimestre) sabe lo que hace falta; lejos, no sabe nada de la forma del futuro. Por eso
+el margen para destronarlo baja con el horizonte (0,10 a un mes, 0,05 a medio, 0 a
+largo): a 7-12 meses, una técnica que empate con el retador y use más historia gana
+(`MEMORY_MONTHS`: media de 3 meses = 3, toda la historia = ∞). Nunca se elige una
+técnica peor que el retador; solo se deja de exigir que sea mejor por un margen.
+
+**Retador.** T3_ma3 (media de los últimos tres meses). Un campeón necesita ≥ 6 predicciones y
 ganar por 0,10 errores binomiales; entre técnicas a menos de 0,10 de la mejor, gana la
 familia más rica. Si no, `tecnica_origen = retador`.
 
@@ -252,9 +297,21 @@ cuadratura con `z × se_binomial de la fila` (su propio muestreo), recortada a
 [0, rate_cap]. En dinero: × pipeline$ × uplift. Por eso una serie de 12 clientes tiene
 ±20 pp aunque su pool tenga ±3.
 
-**Calibración.** Si la banda es del 90 %, el 90 % de los meses del hold-out deben caer
-dentro (`backtest_holdout.dentro_banda`). Por encima del 96 %: demasiado ancha; por debajo
-del 80 %: demasiado estrecha.
+**Calibración honesta.** Los meses del hold-out (≥ el corte: los de rol `test` del
+extracto) no se usan ni para elegir técnica ni para medir bandas; solo para examinar. Si
+se usaran, el 90 % dentro de banda saldría por construcción. Si la banda es del 90 %, el
+90 % de los meses del hold-out deben caer dentro; por encima del 96 %: demasiado ancha;
+por debajo del 80 %: demasiado estrecha.
+
+**La banda del total tiene dos partes.** La cuadratura de miles de pools supone que se
+equivocan por causas independientes; el sesgo del hold-out (todos los pools en la misma
+dirección a horizontes largos) demuestra que no del todo. Por eso el total lleva dos
+bandas: la **idiosincrática** (cuadratura entre pools y meses) y la **común** (los
+cuantiles del error de toda la cartera sumada, por horizonte, medidos en los meses de
+decisión: `decision_agg_bands`), aplicada al dinero de cada mes y sumada linealmente entre
+meses porque un shock común persiste. La banda que se promete es la combinación en
+cuadratura de las dos. En el sintético: idiosincrática ±1,9 %, común −2,5/+5,0 %, total
+−3,1/+5,3 %; el peor mes realizado del hold-out, 2,8 pp: dentro.
 
 **Dónde.** `analysis_backtest.py` (`error_bands`), `run_forecast_assembly.py` (`forecast_bands`).
 
