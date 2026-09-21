@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from config import COMBINED_ID_SEPARATOR, Config, hash_key, join_columns
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 NEUTRAL_UPLIFT = 1.0

@@ -37,6 +37,10 @@ import analysis_baseline
 import analysis_data_profile
 import analysis_dimensions
 import analysis_seasonality_benchmark
+import analysis_top_movers
+import analysis_signal_maturation
+import answers
+import informe
 import raw_data_validation
 import run_forecast_assembly
 import run_rate_series
@@ -45,6 +49,7 @@ import run_uplift
 import run_validation
 import support_reference
 from config import Config, hash_key, join_columns
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 SECTION_RULE = "═" * 74
@@ -93,7 +98,7 @@ def phase_0(configuration: Config) -> dict:
     configuration.write(fine_table, "fact_fine")
     configuration.write(fu_lookup, "lookup_fu")
     configuration.write(comb_lookup, "lookup_comb")
-    support_reference.build_support_reference(labeled_units, configuration)
+    labeled_units = support_reference.add_support_reference(labeled_units, configuration)
     return dict(fine_table=fine_table, labeled_units=labeled_units, conditioned=conditioned)
 
 
@@ -138,7 +143,7 @@ def draw_top_sheets(results: dict, configuration: Config) -> list:
         return []
     from sheet import sheet
     card = results["series_card"]
-    top = card[card["ruta"] == "trainable"].sort_values("usd_proyectado", ascending=False).head(int(configuration.sheets_top_series))
+    top = card[card["ruta"] == TREATMENT_PREDICTABLE].sort_values("usd_proyectado", ascending=False).head(int(configuration.sheets_top_series))
     print(SECTION_RULE, f"\nSHEETS — the {len(top)} series with the most projected money")
     paths = []
     for _, row in top.iterrows():
@@ -177,7 +182,7 @@ def run_analysis(configuration: Config) -> dict:
     composition = analysis_dimensions.run_composition_analysis(units, configuration)
 
     section("PHASE 2 — seasonality benchmark (big series) and pool reference", started); started = time.time()
-    test_months = units.loc[units[configuration.dataset_role_col] == "test", configuration.period_col]
+    test_months = units.loc[units[configuration.dataset_role_col] == ROLE_TEST, configuration.period_col]
     first_test_month = str(test_months.min()) if len(test_months) else None
     benchmark = analysis_seasonality_benchmark.run_seasonality_benchmark(series_card, units, fine_table, configuration)
     monthly_series = analysis_backtest.monthly_series_by_estimation_id(units, decision_support, parent_ladder, configuration)
@@ -201,7 +206,10 @@ def run_analysis(configuration: Config) -> dict:
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
                                                            decisions, monthly_series, configuration, backtest["backtest_holdout"],
                                                            composition["mix_shift_decomposition"])
+    maturation = analysis_signal_maturation.run_signal_maturation(units, series_card, forecast, configuration)
+    forecast = answers.carry_signal_adjustment(forecast, maturation["ajuste_por_mes"], configuration)
     baseline = analysis_baseline.run_baseline(fine_table, forecast["forecast_units_extended"], forecast["business_summary"], configuration)
+    movers = analysis_top_movers.run_top_movers(units, series_card, forecast, decisions, backtest["backtest_holdout"], configuration)
     results_so_far = dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
                           series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
                           decisions=decisions, backtest=backtest, dimensions=dimensions, composition=composition, forecast=forecast)
@@ -211,11 +219,18 @@ def run_analysis(configuration: Config) -> dict:
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,
         decision_support=decision_support, parent_ladder=parent_ladder, backtest_holdout=backtest["backtest_holdout"],
         decision_uplift=decision_uplift), configuration, started)
+    results = dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
+                   series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
+                   decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report,
+                   profiles=profiles, baseline=baseline, benchmark=benchmark, composition=composition, sheets=sheets, top_movers=movers,
+                   signal_maturation=maturation)
+    try:
+        results["informe"] = informe.build_report(results, configuration)
+    except Exception as error:                              # the report never stops the analysis
+        print(f"[informe] failed: {type(error).__name__}: {error}")
+        results["informe"] = None
     print(SECTION_RULE, "\nanalysis complete · decisions and tables in", configuration.outdir)
-    return dict(fine_table=fine_table, units=units, series_summary=series_summary, series_estimates=series_estimates,
-                series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
-                decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report,
-                profiles=profiles, baseline=baseline, benchmark=benchmark, composition=composition, sheets=sheets)
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -261,6 +276,8 @@ def run_pipeline(configuration: Config) -> dict:
     applied = dict(decisions, decision_support=decision_support, decision_uplift=decision_uplift)
     forecast = run_forecast_assembly.run_forecast_assembly(fine_table, units, series_estimates, series_card,
                                                            applied, monthly_series, configuration)
+    maturation = analysis_signal_maturation.run_signal_maturation(units, series_card, forecast, configuration)
+    forecast = answers.carry_signal_adjustment(forecast, maturation["ajuste_por_mes"], configuration)
     report = validate(dict(
         fine_table=fine_table, forecast_units=units, key_bridge=key_bridge, forecast_detail=forecast["forecast_detail"],
         forecast_bands=forecast["forecast_bands"], horizon_report=forecast["horizon_report"], series_card=series_card,

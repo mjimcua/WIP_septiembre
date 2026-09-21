@@ -34,10 +34,9 @@ import pandas as pd
 
 from binomial_reference import support_for_half_width
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-PROJECTION_ROLE, TRAIN_ROLE, TEST_ROLE, PENDING_ROLE = "projection", "train", "test", "pending_close"
-TRUTH_ROLES = (TRAIN_ROLE, TEST_ROLE)
 AUV_PLAUSIBLE_RANGE = (1.0, 10_000.0)          # pipeline / renewed AUV outside this is a data problem
 UPLIFT_ROW_PLAUSIBLE_RANGE = (0.3, 3.0)        # renewed AUV / pipeline AUV per row
 SMALL_PIPELINE_FOR_EXTREME_MONTH = 10          # a 0 % or 100 % month with fewer units than this is sampling
@@ -67,14 +66,14 @@ def calendar_by_role(raw: pd.DataFrame, configuration: Config) -> list:
         contiguous = len(months) == len(pd.period_range(months.min(), months.max(), freq="M"))
         rows.append(profile_row("calendario", f"rol {role_value}", f"{months.min()} .. {months.max()} ({len(months)} meses)",
                                 "contiguo" if contiguous else "CON HUECOS"))
-    projection_months = raw.loc[raw[role] == PROJECTION_ROLE, period]
+    projection_months = raw.loc[raw[role] == ROLE_PROJECTION, period]
     current = raw.loc[raw[configuration.current_month_col].isin([1, True, "1"]), period]
     if len(projection_months) and len(current):
         first_projection, current_month = projection_months.min(), current.min()
         rows.append(profile_row("calendario", "la proyección empieza en el mes en curso", int(first_projection == current_month),
                                 f"proyección desde {first_projection}, mes en curso {current_month}"))
-    train_max = raw.loc[raw[role] == TRAIN_ROLE, period].max() if (raw[role] == TRAIN_ROLE).any() else None
-    test_min = raw.loc[raw[role] == TEST_ROLE, period].min() if (raw[role] == TEST_ROLE).any() else None
+    train_max = raw.loc[raw[role] == ROLE_TRAIN, period].max() if (raw[role] == ROLE_TRAIN).any() else None
+    test_min = raw.loc[raw[role] == ROLE_TEST, period].min() if (raw[role] == ROLE_TEST).any() else None
     if train_max is not None and test_min is not None:
         rows.append(profile_row("calendario", "test empieza justo después de train", int((test_min - train_max).n == 1),
                                 f"train hasta {train_max}, test desde {test_min}"))
@@ -217,7 +216,7 @@ def series_completeness(units: pd.DataFrame, fine_table: pd.DataFrame, configura
     support = history[history[pipe_u] > 0].groupby("fs_id")[pipe_u].median()
     profile["n_mediana"] = profile["fs_id"].map(support).fillna(0.0).round(1)
     profile["tramo_dial"] = profile["n_mediana"].map(lambda n: dial_bucket(n, thresholds))
-    projected = real[real[role].isin((PROJECTION_ROLE, PENDING_ROLE))].groupby("fs_id")[pipe_usd].sum()
+    projected = real[real[role].isin((ROLE_PROJECTION, ROLE_PENDING))].groupby("fs_id")[pipe_usd].sum()
     profile["usd_proyectado"] = profile["fs_id"].map(projected).fillna(0.0).round(2)
     # combinations per unit
     combos = fine_table[fine_table[role].isin(TRUTH_ROLES)].groupby("fu_id").agg(

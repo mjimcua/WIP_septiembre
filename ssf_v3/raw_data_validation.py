@@ -28,19 +28,15 @@ import numpy as np
 import pandas as pd
 
 from config import COMBINED_ID_SEPARATOR, ID_FIELD_SEPARATOR, Config, hash_key, join_columns
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # The three roles the SQL extract labels every row with. An empty role is an alarm,
 # not a stop: a raw with no test rows is legal (e.g. a very short history).
-EXPECTED_DATASET_ROLES = ("train", "test", "projection")
+EXPECTED_DATASET_ROLES = (ROLE_TRAIN, ROLE_TEST, ROLE_PROJECTION)
 
 # The role of every row of the future; the current month is reassigned to it.
-PROJECTION_ROLE = "projection"
-PENDING_ROLE = "pending_close"
-TEST_ROLE = "test"
-TRAIN_ROLE = "train"
-TRUTH_ROLES = (TRAIN_ROLE, TEST_ROLE)        # closed months: the only ones that are truth
 
 # Raw values that mean "this row belongs to the current month". The extract may
 # encode the flag as int, bool or text depending on the SQL client.
@@ -57,13 +53,8 @@ NO_COMBINATION_ID = "na"
 TIME_SERIES_FLAG_ON = 1
 
 # Universe labels (persisted in `universo`).
-UNIVERSE_NORMAL = "normal"
-UNIVERSE_TIME_SERIES = "time_series"
 
 # Route labels (persisted in `ruta`).
-ROUTE_TRAINABLE = "trainable"      # history and future: a rate can be estimated
-ROUTE_HEURISTIC = "heuristic"      # future without history: the cascade decides
-ROUTE_NO_IMPACT = "no_impact"      # no projection rows: nothing to predict, kept
 
 # Separator of the coverage pattern, e.g. "projection_test_train".
 COVERAGE_SEPARATOR = "_"
@@ -154,10 +145,10 @@ def apply_current_month_doctrine(validated: pd.DataFrame, configuration: Config)
     INPUT:   validated — the frame returned by `validate_raw` · configuration — uses
              current_month_col, dataset_role_col, period_col, renewed_*_col, reacq_*_col,
              pending_close_months, test_months.
-    OUTPUT:  a copy where dataset_role is: "projection" for the current month and later
-             (their results wiped), "pending_close" for the `pending_close_months` just
-             before it (results KEPT but never used to learn or to evaluate), "test" for
-             the `test_months` before those, "train" for everything earlier.
+    OUTPUT:  a copy where dataset_role is: ROLE_PROJECTION for the current month and later
+             (their results wiped), ROLE_PENDING for the `pending_close_months` just
+             before it (results KEPT but never used to learn or to evaluate), ROLE_TEST for
+             the `test_months` before those, ROLE_TRAIN for everything earlier.
     RULES:   the current month is the first month of the future: a month still running
              cannot be truth. The month before it is not closed either (renewals land
              after expiry), so it is neither truth nor future: pending. The exam is the
@@ -189,15 +180,16 @@ def apply_current_month_doctrine(validated: pd.DataFrame, configuration: Config)
         periods = conditioned[period_column]
         conditioned[role_column] = np.select(
             [periods >= current, periods >= pending_start, periods >= test_start],
-            [PROJECTION_ROLE, PENDING_ROLE, TEST_ROLE], default=TRAIN_ROLE)
-        calendar = (f"train ≤ {test_start - 1} · test {test_start}..{pending_start - 1} ({configuration.test_months} months) · "
-                    f"pending_close {pending_start}..{current - 1} · projection ≥ {current}")
+            [ROLE_PROJECTION, ROLE_PENDING, ROLE_TEST], default=ROLE_TRAIN)
+        calendar = (f"{ROLE_TRAIN} ≤ {test_start - 1} · {ROLE_TEST} {test_start}..{pending_start - 1} ({configuration.test_months} months) · "
+                    f"{ROLE_PENDING} {pending_start}..{current - 1} · {ROLE_PROJECTION} ≥ {current}")
     else:
-        calendar = "no current-month flag: the raw's own roles are kept"
+        conditioned[role_column] = conditioned[role_column].map(RAW_ROLE_MAP).fillna(conditioned[role_column])
+        calendar = "no current-month flag: the raw's own roles are kept (mapped to the vocabulary)"
     reassigned_row_count = int((conditioned[role_column] != original_roles).sum())
 
     # [3] the future must look like it has not started: wipe what was already booked
-    projection_mask = conditioned[role_column] == PROJECTION_ROLE
+    projection_mask = conditioned[role_column] == ROLE_PROJECTION
     wipe_columns = [column_name for column_name in (configuration.renewed_units_col, configuration.renewed_usd_col,
                                                     configuration.reacq_units_col, configuration.reacq_usd_col)
                     if column_name in conditioned.columns]
@@ -352,7 +344,7 @@ def route_from_coverage(coverage_pattern: str) -> str:
     """The management route of a series, read from which roles it has.
 
     INPUT:   coverage_pattern — the roles of the series joined with "_", sorted.
-    OUTPUT:  one of ROUTE_TRAINABLE, ROUTE_HEURISTIC, ROUTE_NO_IMPACT.
+    OUTPUT:  one of TREATMENT_PREDICTABLE, TREATMENT_FUTURE_ONLY, TREATMENT_HISTORY_ONLY.
     RULES:   no projection nor pending rows → nothing to predict → no_impact (kept: the raw is labeled, never amputated);
              something to predict and a closed month (train or test) → trainable;
              something to predict without any closed month → heuristic (the assembly
@@ -365,13 +357,13 @@ def route_from_coverage(coverage_pattern: str) -> str:
       [2] History or not.
     """
     # [1] nothing to project
-    if PROJECTION_ROLE not in coverage_pattern and PENDING_ROLE not in coverage_pattern:
-        return ROUTE_NO_IMPACT
+    if ROLE_PROJECTION not in coverage_pattern and ROLE_PENDING not in coverage_pattern:
+        return TREATMENT_HISTORY_ONLY
 
     # [2] with a closed month it is trainable; without, heuristic
-    if TRAIN_ROLE in coverage_pattern or TEST_ROLE in coverage_pattern:
-        return ROUTE_TRAINABLE
-    return ROUTE_HEURISTIC
+    if ROLE_TRAIN in coverage_pattern or ROLE_TEST in coverage_pattern:
+        return TREATMENT_PREDICTABLE
+    return TREATMENT_FUTURE_ONLY
 
 
 def label_universe_and_routes(forecast_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:

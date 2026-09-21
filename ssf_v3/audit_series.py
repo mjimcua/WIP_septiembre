@@ -29,6 +29,7 @@ if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 RULE = "─" * 74

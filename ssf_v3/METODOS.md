@@ -91,7 +91,7 @@ mezcla con z = n/(n+k). Con un solo suelo en 30, una cohorte de 120 iría sola c
 pp teniendo al lado un pool de 2.400 con ±1,7; con un solo suelo en 271, ignoraría sus
 120 clientes y las señales de churn (que casi nunca reúnen 271) se quedarían sin pool.
 
-**Ejemplo (sintético).** Negativos `EU|SIG=neg|A|web`: hermanas con tasas 0,31-0,44 →
+**Ejemplo (sintético).** Negativos `EU|SIG=negativo|A|web`: hermanas con tasas 0,31-0,44 →
 k = 111; la serie de n = 12 tiene z = 12/(12+111) = 0,10: 10 % suya, 90 % del pool. Con
 menos de 3 hermanas no hay varianza entre que estimar: k = `k_cred` = 60.
 
@@ -230,9 +230,10 @@ al techo, y una tendencia se frena sola al acercarse a 1.
 Σφ^i (φ = 0,9): a h = 1 el 90 % de la pendiente, a h = 12 el 64 %, a h = 24 el 82 % del
 tope 9. Una serie que baja 1 pp/mes no llega a 0 en 2027: se estabiliza.
 
-**El catálogo, reducido.** Siete técnicas de nivel (media, media de 3 y de 6 meses, EWMA,
-suavizado exponencial, Holt amortiguado, credibilidad temporal) y una sola con forma,
-T15 (nivel reciente + efecto de mes), que solo compite en las series que el benchmark
+**El catálogo.** Técnicas de nivel (media, media de 3 y de 6 meses, EWMA, suavizado
+exponencial, credibilidad temporal), dos series temporales clásicas que nunca inventan
+estación (Holt amortiguado y Theta: nivel y tendencia), y dos con forma anual (T15 nivel
+reciente + efecto de mes; Holt-Winters) que solo compiten en las series que el benchmark
 declaró estacionales. Ninguna técnica decide por su cuenta que hay estación.
 
 **Dónde.** `techniques.py`.
@@ -297,7 +298,7 @@ cuadratura con `z × se_binomial de la fila` (su propio muestreo), recortada a
 [0, rate_cap]. En dinero: × pipeline$ × uplift. Por eso una serie de 12 clientes tiene
 ±20 pp aunque su pool tenga ±3.
 
-**Calibración honesta.** Los meses del hold-out (≥ el corte: los de rol `test` del
+**Calibración honesta.** Los meses del hold-out (≥ el corte: los de rol `examen` del
 extracto) no se usan ni para elegir técnica ni para medir bandas; solo para examinar. Si
 se usaran, el 90 % dentro de banda saldría por construcción. Si la banda es del 90 %, el
 90 % de los meses del hold-out deben caer dentro; por encima del 96 %: demasiado ancha;
@@ -353,9 +354,9 @@ ni de series con la señal contraria. Su escalera es:
 
 ```
 R0  ella misma                                  EU|1|0|0|0|A|web         n = 15
-R1  mismas dims, flags resumidos en el signo    EU|SIG=neg|A|web         n = 42  (15+12+10+5)
-R2  la extra anulada, mismo signo               EU|SIG=neg|A|*           n = 42
-R3  celda mandatory × signo  ← TOPE             EU|SIG=neg|*|*           n = 42
+R1  mismas dims, flags resumidos en el signo    EU|SIG=negativo|A|web         n = 42  (15+12+10+5)
+R2  la extra anulada, mismo signo               EU|SIG=negativo|A|*           n = 42
+R3  celda mandatory × signo  ← TOPE             EU|SIG=negativo|*|*           n = 42
 ```
 
 Si en R3 sigue sin llegar a 30, **no hay más escalera**: se queda con la mejor tasa de su

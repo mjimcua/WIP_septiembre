@@ -1,138 +1,136 @@
-# SFF v3 — Stratified Forecast Framework · README
+# SFF v3 — Stratified Forecast Framework · el forecast de renovaciones, explicado
 
-Forecast de renovaciones de suscripciones por unidades de forecast (serie × mes), con
-soporte prestado por una escalera de parientes, técnica por serie elegida en backtest,
-bandas asimétricas calibradas, uplift por celda, y horizonte extendido con pipeline
-simulada. Todo en un directorio plano; nada del legacy.
+**Qué es.** Un framework que predice cuánto dinero de renovaciones entrará cada mes,
+con una banda de confianza defendible, y que cuenta por qué. Parte de la pipeline (qué
+contratos vencen cuándo), aprende del pasado —sobre todo del reciente—, y produce tres
+respuestas: cómo acaba este año, cuál es la pipeline del que viene y cómo acaba, más las
+acciones que el resultado sugiere, por región.
 
-Lee primero `GUION_MARCO.md` (de qué va, en el orden en que se piensa), `PREGUNTAS_NEGOCIO.md` (las diez preguntas que responde y en qué tabla), `ESTRATEGIA_POR_REGION.md` (cómo organizarse con el resultado), `POR_QUE_ESTE_FORECAST.md` (por qué así) y `GUION_V3.md` (qué hace cada
-pieza); `GLOSARIO.md` para los términos; `COTA_BINOMIAL.md` para se_pp_max / moe / el dial 30-271-752 y por qué importa; `METODOS.md` para cada técnica estadística explicada con números (cuadratura, credibilidad, η², Kitagawa, φ, logit, bandas); `PARAMETROS.md` para cada parámetro y su valor
-por defecto justificado; `AUDITORIA.md` para auditar una serie (Power BI y notebook);
-`ANALYSIS_POINTS.md` para qué mirar cuando corra sobre datos reales; `PENSAR_JUNTOS.md`
-para las preguntas abiertas de ajuste; `USO_NOTEBOOK.md` para trabajar desde un notebook.
+**Cómo se lee este repositorio, según quién eres:**
 
-## Ejecutar
+| Lector | Empieza por | Después |
+|---|---|---|
+| Negocio / dirección | el **informe** que genera cada análisis (`<outdir>/informe/informe.md`) | `PREGUNTAS_NEGOCIO.md`, `ESTRATEGIA_POR_REGION.md` |
+| Analista que va a usar el framework | `USO_NOTEBOOK.md` (el bloque de configuración y cómo ejecutar) | `INFORME.md` (qué cuenta cada capítulo), `ANALYSIS_POINTS.md` (qué tabla mirar para qué), `RECORRIDO_DE_UNA_SERIE.md` |
+| Quien quiere entender el método | `GUION_MARCO.md` (de qué va, en el orden en que se piensa) | `COTA_BINOMIAL.md`, `METODOS.md` (la matemática con números), `ETAPA_MADURACION_SENALES.md` |
+| Quien va a tocar el código | `FLUJO.md` (función a función, con entradas, salidas y tablas) | `PARAMETROS.md`, `vocabulario.py`, los tests |
+| Quien monta Power BI | `AUDITORIA.md` (claves, relaciones, tablas `bi`) | `config.TABLE_KIND` |
+
+## Cómo se ejecuta
 
 ```python
 from config import Config
-from pipeline import run_analysis, run_pipeline
-import pandas as pd
+from pipeline import run_analysis
 
-class MiConfig(Config):
+class SFFConfig(Config):
     def read_raw(self):
-        return pd.read_sql("SELECT ... ", self.engine)     # tu query; todas las columnas declaradas
+        return pd.read_sql(RAW_EXTRACT_QUERY, self.engine)
 
-configuration = MiConfig(sql_server="...", sql_database="Kamelot",
-                         backtest_test_start="2026-01",       # los meses de 2026 ya ocurridos = hold-out
-                         extended_horizon_end="2027-12")      # simular la pipeline hasta aquí
-
-results = run_analysis(configuration)     # ANALYSIS: decide, escribe decision_*, produce el forecast
-results = run_pipeline(configuration)     # RUN mensual: lee decision_*, produce el forecast
+configuration = SFFConfig(sql_server="...", sql_database="Kamelot", extended_horizon_end="2027-12",
+                          term_column="term_level_2", term_months_by_value={"1 year": 12, "2 year": 24, "3 year": 36},
+                          extension_row_filter={"term_level_2": ["1 year"]},
+                          uplift_mandatory_dims=["regional_level_1", "product_level_1", "purchase_type", "term_level_2"],
+                          benchmark_group_dims=["regional_level_1", "product_level_1"])
+results = run_analysis(configuration)      # tablas en SQL (prefijo sff_), fichas y el informe en <outdir>/
 ```
 
-`read_raw` DEBE sobreescribirse. `run_analysis` se ejecuta en el periodo de evaluación (lo
-retiene el analista); `run_pipeline` cada mes (delegable). Tests: `python run_all_tests.py`.
+`run_analysis` hace todo: perfila el raw, construye las series, decide la escalera, la
+estacionalidad y las técnicas, ensambla el forecast, lo examina, responde a negocio,
+dibuja las fichas de las cinco series mayores y escribe el informe. `run_pipeline` es la
+versión mensual que solo aplica las decisiones ya tomadas.
 
-## Doctrina (sellada)
+## El flujo, en una línea por fase
 
-- **Aprendemos del pasado, confirmamos en el presente, proyectamos el futuro — para cambiarlo.**
-- La referencia binomial √(p(1−p)/n) mide todo: suelo de soporte, normalización de errores,
-  tests de estacionalidad/tendencia, φ (varianza observada / binomial) que dice dónde hay motor.
-- Predecir ≠ reportar: dos errores por serie, `se_estimacion_pp` (lo que sabemos de la tasa)
-  y `se_prediccion_pp` (lo que pasará en un mes con ese n; nunca encoge).
-- Una escalera, un bucle: cada serie toma soporte del pariente más cercano que lo tiene, y
-  se lo cree en proporción a lo poco que tiene ella (credibilidad z = n/(n+k), Bühlmann-Straub).
-- **El signo nunca se pierde.** Timevarying = banderas binarias por motivo con signo; la serie
-  se resume en su signo (neutral/neg/pos/mixed). Positivos y negativos nunca se juntan; los
-  neutros solo con neutros; una serie mixta se queda sola y se cuenta. Para las series con
-  signo la escalera **termina en la celda mandatory × signo**: más arriba es fabricar Simpson.
-  Si sigue bajo el suelo se queda con lo mejor de su signo, sin credibilidad (`S_signo_bajo_suelo`).
-- Los pools se calculan con TODAS las series que casan el patrón (hermanas grandes incluidas):
-  el patrón decide quién calcula el número; la escalera decide quién lo recibe.
-- La estacionalidad de la tasa se decide UNA vez, en el benchmark de las series grandes
-  neutras (fase 2): amplitud en pp, consistencia entre años y una prueba predictiva contra
-  el nivel reciente. Sin estación material, la tasa se predice desde su nivel; con ella,
-  efectos de mes solo en esas series. Ninguna técnica "encuentra" estación por su cuenta.
-- El calendario se decide desde el mes en curso: proyección (mes en curso y después),
-  mes pendiente de cierre (ni verdad ni entrenamiento; se predice), 6 meses de examen, resto
-  entrenamiento. El forecast aprende de todos los meses cerrados; las técnicas y sus bandas se
-  deciden sin los meses de examen.
-- Un juez con dos baterías sobre los últimos 6 meses cerrados: h=1 (el mes siguiente con
-  datos hasta el anterior) y h=6 (con datos hasta seis meses antes); más allá de 6 se usa la
-  de 6 y se actualiza mes a mes. Retador T3_ma3; margen 0,10 cerca y 0 lejos; dentro del
-  margen gana la técnica con más memoria.
-- La banda del total = idiosincrática (pools independientes, cuadratura) ⊕ común (el error
-  de toda la cartera por horizonte, sumado linealmente entre meses).
-- Bandas: cuantiles p5/p95 del error normalizado por (id, h), propias o de familia, monótonas
-  en h, × el error binomial del pool en el momento de predecir, ⊕ el muestreo de la fila.
-  Agregación: suma lineal dentro de (id, mes), cuadratura entre.
-- La composición se cuenta, no se busca: Kitagawa (comportamiento vs composición) y el
-  coste en dólares de la vista solo-mandatory (walk-forward). Nada decide con ello.
-- Horizonte extendido: `pipeline(m) = renovados(m − plazo) × factor_adquisicion`, filas
-  `simulada = 1`, factor estimado del histórico (o de config). Es la asunción declarada.
+0 raw y calendario desde el mes en curso · 1.1 series y ruido binomial · 1.2 qué
+dimensiones separan comportamiento · 1.3 escalera con credibilidad y niveles de riesgo ·
+1.4 composición (contada, no buscada) y señales · 2 benchmark de estacionalidad (una
+decisión para toda la cartera) · 3 backtest con dos baterías (un mes y seis meses vista),
+sin fuga, con bandas idiosincrática y común · 4 revalorización · 5 ensamblaje, maduración
+de señales, respuestas, región, top movers, baseline · fichas · informe · validación.
 
-## Módulos (directorio plano)
+`FLUJO.md` tiene cada paso con su función, sus entradas, sus reglas y su tabla.
 
-| Módulo | Etapa | Qué hace |
+## Los módulos
+
+| Módulo | Fase | Qué hace |
 |---|---|---|
-| `config.py` | ambos | dataclass Config (contrato de columnas, taxonomía, parámetros), registro de tablas, `write` |
-| `binomial_reference.py` | ambos | se binomial, Wilson, el dial, logit, φ, cuantiles |
-| `analysis_data_profile.py` | ANALYSIS | niveles 0 y 1: perfil del raw (calendario, dominios y su estabilidad, coherencia de medidas, plazo) y de las unidades (completitud, dial, combinaciones, meses extremos) |
-| `raw_data_validation.py` | RUN | fase 0: contrato, doctrina mes en curso, tabla fina, forecast units, claves, universos/rutas |
-| `support_reference.py` | ANALYSIS | fu_summary: la foto del soporte |
-| `run_rate_series.py` | RUN | 1.1 series, huecos (tasa NaN), tasa por fila, resumen con signo |
-| `analysis_dimensions.py` | ANALYSIS | 1.2 η² individual / contribución única / ω² / pares → `decision_eta2`; contrafactual y Kitagawa; calibración timevarying |
-| `run_support_ladder.py` | RUN | 1.3 parientes, pools, subida, credibilidad, niveles de riesgo, ficha, cadena, informe nivel × $ |
-| `analysis_seasonality_benchmark.py` | ANALYSIS | 2 el benchmark de estacionalidad sobre las series grandes neutras: una decisión para toda la cartera → `decision_estacionalidad`, `bench_panel`, `bench_flags` |
-| `techniques.py` | ambos | catálogo REDUCIDO: 7 técnicas de nivel + T15 (nivel reciente + efecto de mes, solo donde el benchmark lo declaró); `predict` |
-| `analysis_backtest.py` | ANALYSIS | serie mensual por pool y `pool_reference`; 3 dos baterías (h=1, h=6) sobre los últimos 6 meses cerrados, decisión sin el examen, campeón por tramo con retador ma3 → `decision_technique`; bandas propias/familia + banda común → `decision_error_bands`, `decision_agg_bands`; hold-out por pool y del total |
-| `run_uplift.py` | RUN | 4 ratio de sumas por celda, padre por punto de partida, bootstrap → `decision_uplift` |
-| `run_forecast_assembly.py` | RUN | 5 horizonte extendido, ensamblaje con orígenes, bandas, agregación, informes |
-| `analysis_baseline.py` | ANALYSIS | la previsión de Excel (tasa en $ de los últimos meses por grano agregado × pipeline) frente al framework, con su propio walk-forward |
-| `run_validation.py` | ambos | panel INTEGRITY / DOCTRINE / QUALITY |
-| `sheet.py` | ambos | `sheet(key, configuration)`: la ficha de lo que señale cualquier clave (fs_key, estimacion_key, celda_key, uplift_cell_key, fu_key, fu_comb_key, o un fs_id): tablas filtradas + resumen en palabras + figura |
-| `diagnostics_plots.py` | análisis | `run_series_diagnostics(configuration, top=10, by="usd")`: 4 figuras compactas de las top series (tasa, pipeline, perfil estacional, hold-out) con sus diagnósticos, para revisar a ojo |
-| `audit_series.py` | ambos | `audit_series(fs_id, configuration)`: la explicación completa de una serie desde las tablas (AUDITORIA.md) |
-| `pipeline.py` | — | `run_analysis`, `run_pipeline`, `key_bridge`, horizontes |
-| `main.py` | — | entrada de producción (`python main.py` / `python main.py analysis`) |
-| `synthetic_v3.py` | test | dataset sintético con un escenario por feature |
-| `checks.py`, `test_fixtures.py`, `test_*.py`, `run_all_tests.py` | test | ocho baterías: config, fase 0, fase 1, fases 2-3, fases 4-5, pipeline, ingeniería (determinismo, integridad, contratos, robustez, rendimiento) y estadística (coberturas, credibilidad, cuadratura, fuga, potencia del benchmark, identidades) |
+| `vocabulario.py` | — | los valores persistidos (roles, signos, tratamientos, orígenes, niveles), en español, en un solo sitio |
+| `config.py` | — | contrato de columnas, taxonomía, parámetros por fase, registro de tablas y su tipo, `write` con trazabilidad, claves para BI |
+| `binomial_reference.py` | — | error binomial, Wilson, soporte para un margen dado, logit |
+| `raw_data_validation.py` | 0 | contrato del raw, calendario desde el mes en curso, tablas fina y de unidades, universos y tratamientos |
+| `support_reference.py` | 0 | las tres cotas por unidad (se_pp_max, moe_pp_max, moe_usd_max) en `fact_fu` |
+| `analysis_data_profile.py` | 0-1 | perfil del raw y de las unidades: calendario, dominios, medidas, el dial |
+| `run_rate_series.py` | 1.1 | series, huecos, tasas, signo, resumen por serie |
+| `analysis_dimensions.py` | 1.2 / 1.4 | η² y orden de colapso; composición (Kitagawa) y coste de la vista solo-mandatory; calibración de señales |
+| `run_support_ladder.py` | 1.3 | parientes por signo, pools, subida, credibilidad, estimación, niveles de riesgo |
+| `analysis_seasonality_benchmark.py` | 2 | el benchmark de estacionalidad sobre las series grandes neutras: una decisión |
+| `techniques.py` | 3 / 5 | 10 técnicas (nivel, Theta, Holt amortiguado; efectos de mes solo con veredicto) |
+| `analysis_backtest.py` | 2-3 | serie mensual por pool, referencia de pools, backtest sin fuga, campeón por visión, bandas, examen, error común |
+| `run_uplift.py` | 4 | revalorización por celda, padre y celda bajo el suelo, bootstrap, tope |
+| `run_forecast_assembly.py` | 5 | reentradas (proyectada / simulada), tasa por fila (forma del pool + nivel propio), bandas, agregación |
+| `answers.py` | 5 | resumen de la pipeline, respuestas de negocio, región, forecast ajustado |
+| `analysis_signal_maturation.py` | 5 | composición por celda, foto mensual, maduración pendiente, ajuste, alertas |
+| `analysis_top_movers.py` | 5 | deterioro / mejora, señal negativa, banda ancha, sesgo del examen, precio |
+| `analysis_baseline.py` | 5 | la previsión de hoja de cálculo, con su propio walk-forward |
+| `run_validation.py` | 5 | panel INTEGRITY / DOCTRINE / QUALITY |
+| `informe.py` | 5 | el informe: portada, siete capítulos, leyenda, anexo |
+| `sheet.py`, `audit_series.py`, `diagnostics_plots.py` | — | la ficha de cualquier clave, la auditoría en consola, las figuras |
+| `pipeline.py` | — | `run_analysis`, `run_pipeline`, el puente de claves, las fichas |
+| `main.py`, `synthetic_v3.py` | — | la configuración de producción; el dataset sintético de pruebas |
 
-## Tablas (47, prefijo `sff_`)
+## Las tablas (54, prefijo `sff_`)
 
-Fase 0: `fact_fu`, `fact_fine`, `fact_fu_gaps`, `lookup_fu`, `lookup_comb`, `fu_summary`, `raw_profile`, `dim_domains`, `fu_profile`, `dial_buckets`.
-Fase 1: `fs_summary`, `series_card`, `risk_levels`, `parent_ladder`, `support_chain`,
-`decision_support`, `decision_eta2`, `decision_eta2_pairs`, `mandatory_only_cost`,
-`mix_shift`, `tv_calibration`. Fase 2: `decision_estacionalidad`, `bench_panel`, `bench_flags`, `pool_reference`. Fase 3: `dim_tecnica`,
-`backtest_pred`, `backtest_holdout`, `backtest_holdout_agg`, `backtest_agg_error`, `decision_agg_bands`, `decision_technique`, `decision_error_bands`.
-Fase 4: `uplift_chain`, `decision_uplift`. Fase 5: `key_bridge`, `fu_extended`,
-`forecast_detail`, `forecast_bands`, `horizon_report_total`, `forecast_by_level`,
-`pipeline_summary`, `business_summary`, `forecast_by_region`, `baseline_forecast`, `baseline_summary`, `validation_report`.
+Clasificadas en `config.TABLE_KIND`:
 
-Ids y claves: `fu_id`/`fu_key` (unidad), `comb_id`/`comb_key` (combinación de extras de
-revalorización), `fu_comb_key` (fila del raw), `fs_id`/`fs_key` (serie), `id_estimacion`/
-`estimacion_key` (patrón del pariente elegido: `EU|SIG=neg|A|*`), `uplift_cell_id`/`uplift_cell_key`,
-`celda_id`/`celda_key` (celda mandatory). Las claves se estampan al escribir en toda tabla
-que lleve el id (`Config.stamp_derived_keys`); `key_bridge` une todos por fila del raw.
+- **producto** (las que lee el informe y negocio): `pipeline_summary`, `business_summary`,
+  `forecast_by_region`, `forecast_by_level`, `horizon_report_total`, `top_movers`,
+  `risk_levels`, `decision_estacionalidad`, `baseline_summary`, `signal_adjustment`,
+  `signal_alerts`, `validation_report`, `dial_buckets`, `metric_legend`.
+- **bi** (dimensiones y hechos para Power BI): `fact_fu`, `fact_fine`, `lookup_fu`,
+  `lookup_comb`, `key_bridge`, `forecast_detail`, `forecast_bands`, `series_card`,
+  `fu_extended`, `signal_snapshot`, `mix_shift`.
+- **intermedia** (decisiones y trazas que el framework lee): el resto.
 
-## Niveles de riesgo
+Toda tabla lleva `process_date`, `execution_id` y las claves derivadas (`fs_key`,
+`estimacion_key`, `uplift_cell_key`, `celda_key`) para relacionarse en BI.
 
-A propio (n ≥ 271, ≥ 12 meses: sola) · A2 propio corto (n ≥ 271, < 12 meses) · A3 propio reforzado (30 ≤ n < 271: su tasa completada con su primer pariente con soporte) · B prestado (peldaño 1-2: pariente que comparte todas las mandatory) · C lejano (peldaño ≥ 3: celda o mandatory colapsada) · S señal bajo suelo (con flag, celda × signo sin llegar al suelo: mejor tasa de su signo, ruidosa) · M signo mixto · D sin historia · N sin impacto · T universo ts. La consola imprime la leyenda completa tras la tabla de dinero (`LEVEL_DEFINITIONS`).
+## Las decisiones de diseño (las finales)
 
-## Divergencias declaradas respecto a DISENO_SPLIT / DISENO_V2
+- El ruido binomial √(p(1−p)/n) es el suelo de todo: el dial (30 / 271 / 752 contratos
+  ↔ ±15 / ±5 / ±3 pp), los niveles de riesgo, el error normalizado del backtest.
+- Segmentar para ganar homogeneidad, agrupar para recuperar soporte: la escalera con dos
+  suelos (30 para prestar, 271 para ir sola) y credibilidad en medio; los signos nunca se
+  mezclan.
+- El calendario se decide desde el mes en curso: proyección, mes pendiente de cierre,
+  seis meses de examen, entrenamiento. El forecast aprende de todos los meses cerrados;
+  técnicas y bandas se deciden sin los de examen.
+- La composición se cuenta (Kitagawa, coste de la vista solo-mandatory), no se persigue.
+- La estacionalidad de la tasa se decide una vez, en las series grandes neutras, con
+  amplitud, consistencia y una prueba predictiva; ninguna técnica la encuentra por su cuenta.
+- Dos baterías de backtest (un mes y seis meses vista) sobre los últimos seis meses
+  cerrados; retador el último trimestre; margen 0,10 cerca y 0 lejos, donde gana la memoria.
+- La banda del total = idiosincrática (cuadratura) ⊕ común (el error del total, lineal
+  entre meses). El error del total se examina aparte.
+- La pipeline futura se etiqueta real / proyectada / simulada; la adquisición se simula,
+  la renovación se proyecta; ninguna lleva banda de volumen.
+- Las señales maduran: la maduración pendiente se valora y se presenta como forecast
+  ajustado, acompañante hasta que las fotos mensuales midan la curva.
+- Ninguna cifra sin unidad, referencia y lectura: la leyenda de métricas se imprime la
+  primera vez que cada una aparece.
 
-- `fu_summary` se escribe en ANALYSIS (`support_reference.py`), no en RUN.
-- EDGE CASES en inglés en los docstrings; nombres de columnas y valores persistidos en español.
-- `verbosity` y `raw_data_path` eliminados; `ts_revenue_col` conservado (uso futuro).
-- Sin `simpson_showcase*`: se sustituye por Kitagawa + contrafactual.
-- Sin comparación con referencia numérica: los tests son de lógica sobre escenarios diseñados.
-- La credibilidad del uplift (v2, no-op) se elimina; el soporte del uplift se repara por padre/celda.
-- El universo `time_series` solo se etiqueta (nivel T); su forecast usa la cascada celda/global.
+## Tests
 
-## Pendiente / abiertos
+`python run_all_tests.py`: ocho baterías (config, fase 0, fase 1, fases 2-3, fases 4-5,
+pipeline, ingeniería, estadística). Las dos últimas comprueban propiedades con verdad
+conocida: cobertura de Wilson, credibilidad, cuadratura medida, ausencia de fuga,
+potencia y falsos positivos del benchmark, identidad de Kitagawa, uplift insesgado,
+calibración de bandas.
 
-- SARIMA / ETS auto como técnicas enchufables (statsmodels no disponible en este entorno).
-- Uplift: credibilidad / η² aplazados; investigar celdas con `recortado = 1` en datos reales.
-- `key_bridge` y `backtest_pred` pueden ser grandes en Kamelot: medir tiempos.
-- φ como palanca de banda (hoy solo informativo).
-- Test estacional multi-año con cambio de amplitud.
+## Documentación vigente
+
+`GUION_MARCO.md` · `INFORME.md` · `PREGUNTAS_NEGOCIO.md` · `ESTRATEGIA_POR_REGION.md` ·
+`USO_NOTEBOOK.md` · `FLUJO.md` · `METODOS.md` · `COTA_BINOMIAL.md` ·
+`RECORRIDO_DE_UNA_SERIE.md` · `ETAPA_MADURACION_SENALES.md` · `ANALYSIS_POINTS.md` ·
+`PARAMETROS.md` · `GLOSARIO.md` · `AUDITORIA.md` (Power BI) · `AUDITORIA_PROFUNDA.md`
+(la auditoría que motivó esta versión). Los documentos de diseño previos están en
+`historico/` y no describen el código actual.

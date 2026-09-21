@@ -7,8 +7,8 @@ extra_renovacion = [channel]; 24 months of history 2024-01..2025-12, current mon
 
   S1  EU | soft=0 auto=0 | web    n=200  rate .80   → A: its own (rung 0)
   S2  EU | soft=0 auto=0 | tele   n=10   rate .80   → B: rung 2 (channel annulled) pools with S1: n=210
-  S3  EU | soft=1 auto=0 | web    n=12   rate .35   → B: rung 1 'EU|SIG=neg|web' is itself (12) → rung 2 'EU|SIG=neg|*' with S4: n=32
-  S4  EU | soft=1 auto=0 | tele   n=20   rate .35   → B: rung 1 'EU|SIG=neg|tele' is itself (20) → rung 2 'EU|SIG=neg|*' with S3
+  S3  EU | soft=1 auto=0 | web    n=12   rate .35   → B: rung 1 'EU|SIG=negativo|web' is itself (12) → rung 2 'EU|SIG=negativo|*' with S4: n=32
+  S4  EU | soft=1 auto=0 | tele   n=20   rate .35   → B: rung 1 'EU|SIG=negativo|tele' is itself (20) → rung 2 'EU|SIG=negativo|*' with S3
   S5  EU | soft=0 auto=1 | web    n=6    rate .95   → S: SIG=pos alone, top of its ladder still < 30
   S6  EU | soft=1 auto=1 | web    n=4    rate .60   → M: mixed sign, never pooled
 """
@@ -32,6 +32,7 @@ if PROJECT_FOLDER not in sys.path:
     sys.path.insert(0, PROJECT_FOLDER)
 
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 import raw_data_validation
 
 LADDER_TAXONOMY = dict(business_mandatory_dims=["region"],
@@ -51,7 +52,7 @@ LADDER_SERIES = [  # (region, softcancel, autorenew, channel, units, rate)
 
 
 def ladder_role(month: pd.Period) -> str:
-    return "projection" if str(month) >= "2026-01" else "train"
+    return ROLE_PROJECTION if str(month) >= "2026-01" else ROLE_TRAIN
 
 
 def build_ladder_raw(seed: int = 3, seasonal_series: bool = False, trend_series: bool = False) -> pd.DataFrame:
@@ -72,10 +73,10 @@ def build_ladder_raw(seed: int = 3, seasonal_series: bool = False, trend_series:
                 p = .85 - .008 * index
             else:
                 p = rate
-            renewed = np.nan if role == "projection" else rng.binomial(units, min(.99, max(.01, p)))
+            renewed = np.nan if role == ROLE_PROJECTION else rng.binomial(units, min(.99, max(.01, p)))
             rows.append(dict(period=str(month), dataset_role=role, is_current_month=int(str(month) == "2026-01"),
                              flag_time_series=0, total_tr_units=float(units), total_tr_usd=float(units * 20),
-                             total_renewed_units=renewed, total_renewed_usd=(renewed * 20 * 1.05) if role != "projection" else np.nan,
+                             total_renewed_units=renewed, total_renewed_usd=(renewed * 20 * 1.05) if role != ROLE_PROJECTION else np.nan,
                              total_reacquired_units=0.0, total_reacquired_usd=0.0, TR_AUV=20.0, REN_AUV=21.0, ReAC_AUV=0.0,
                              region=region, softcancel=softcancel, autorenew=autorenew, channel=channel, discount="d0"))
     return pd.DataFrame(rows)

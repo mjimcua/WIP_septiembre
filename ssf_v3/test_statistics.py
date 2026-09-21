@@ -37,6 +37,7 @@ import binomial_reference as ref
 import analysis_seasonality_benchmark as bench
 import analysis_dimensions
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from test_fixtures import ladder_config, phase_0_units, quiet
 import run_rate_series
 import run_support_ladder
@@ -198,7 +199,7 @@ def test_kitagawa_closes() -> None:
         for name, rate, weight in (("A", 0.9, w), ("B", 0.5, 1 - w)):
             pipe = 1000 * weight
             rows.append(dict(fs_id=f"X|{name}", period=month, region="X", universo="normal", sintetica=0, tasa=rate,
-                             total_renewed_units=pipe * rate, total_tr_units=pipe, total_tr_usd=pipe * 10, dataset_role="train"))
+                             total_renewed_units=pipe * rate, total_tr_units=pipe, total_tr_usd=pipe * 10, dataset_role=ROLE_TRAIN))
     frame = pd.DataFrame(rows)
     with tempfile.TemporaryDirectory() as folder:
         configuration = ladder_config(folder)

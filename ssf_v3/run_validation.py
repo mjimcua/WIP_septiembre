@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 MONEY_TOLERANCE_USD = 1e-6
@@ -53,10 +54,10 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
         rows.append(check_row("fu_comb_key unique in the bridge", FAMILY_INTEGRITY, int(bridge["fu_comb_key"].duplicated().sum()), "= 0",
                               not bridge["fu_comb_key"].duplicated().any()))
     if fine is not None:
-        projection = fine[fine[configuration.dataset_role_col] == "projection"]
+        projection = fine[fine[configuration.dataset_role_col] == ROLE_PROJECTION]
         early = int((projection[configuration.renewed_units_col].fillna(0) != 0).sum())
         rows.append(check_row("projection rows carry no results", FAMILY_DOCTRINE, early, "= 0", early == 0))
-        current_not_projection = int((fine[configuration.current_month_col].isin([1, True, "1"]) & (fine[configuration.dataset_role_col] != "projection")).sum())
+        current_not_projection = int((fine[configuration.current_month_col].isin([1, True, "1"]) & (fine[configuration.dataset_role_col] != ROLE_PROJECTION)).sum())
         rows.append(check_row("current month is projection", FAMILY_DOCTRINE, current_not_projection, "= 0", current_not_projection == 0))
     detail = artifacts.get("forecast_detail")
     if detail is not None and len(detail) and "esperado_usd" in detail.columns:
@@ -90,14 +91,14 @@ def run_validation(artifacts: dict, configuration: Config) -> pd.DataFrame:
     ladder = artifacts.get("parent_ladder")
     support = artifacts.get("decision_support")
     if ladder is not None and support is not None and len(ladder):
-        signed = support[support["signo"].isin(["neg", "pos"])]
+        signed = support[support["signo"].isin([SIGN_NEGATIVE, SIGN_POSITIVE])]
         climbed_above_cell = int((signed["peldano"] > 3).sum())
         if configuration.signed_ladder_max_loss <= 0:
             rows.append(check_row("signed series never climb above their cell", FAMILY_DOCTRINE, climbed_above_cell, "= 0", climbed_above_cell == 0))
         else:
             rows.append(check_row("signed series climbing above their cell (sign kept)", FAMILY_QUALITY, climbed_above_cell,
                                   f"allowed: cumulative loss ≤ {configuration.signed_ladder_max_loss}", None))
-        neutral_pooled_with_sign = int(support[(support["signo"] == "neutral") & support["id_estimacion"].str.contains("SIG=neg|SIG=pos")].shape[0])
+        neutral_pooled_with_sign = int(support[(support["signo"] == SIGN_NEUTRAL) & support["id_estimacion"].str.contains("SIG=negativo|SIG=positivo")].shape[0])
         rows.append(check_row("neutral series never pooled with a sign", FAMILY_DOCTRINE, neutral_pooled_with_sign, "= 0", neutral_pooled_with_sign == 0))
     holdout = artifacts.get("backtest_holdout")
     if holdout is not None and len(holdout):

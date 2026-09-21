@@ -41,7 +41,8 @@ import pandas as pd
 
 from binomial_reference import binomial_se_pp
 from config import Config, explain, join_columns
-from run_rate_series import PROJECTION_ROLE, ROUTE_TRAINABLE, UNIVERSE_NORMAL
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
+from run_rate_series import ROLE_PROJECTION, TREATMENT_PREDICTABLE, UNIVERSE_NORMAL
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # (window, min history and max pairs are Config parameters: see config.py, phase 1.2)
@@ -157,8 +158,8 @@ def dimension_separation(series_summary: pd.DataFrame, units: pd.DataFrame, conf
     """
     dims = configuration.business_mandatory_dims + configuration.extra_renovacion
     values = units.drop_duplicates("fs_id")[["fs_id"] + dims]
-    base = series_summary[(series_summary["ruta"] == ROUTE_TRAINABLE) & series_summary["tasa_propia"].notna()
-                          & (series_summary["signo"] == "neutral") & (series_summary["n_propio"] > 0)]
+    base = series_summary[(series_summary["ruta"] == TREATMENT_PREDICTABLE) & series_summary["tasa_propia"].notna()
+                          & (series_summary["signo"] == SIGN_NEUTRAL) & (series_summary["n_propio"] > 0)]
     base = base.merge(values, on="fs_id")
     rows = []
     r2_all = weighted_r2_factorial(base, dims, "tasa_propia", "n_propio") if len(base) >= 3 else 0.0

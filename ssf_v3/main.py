@@ -26,6 +26,7 @@ PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in glo
 sys.path.insert(0, PROJECT_FOLDER)
 
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from pipeline import run_analysis, run_pipeline
 
 

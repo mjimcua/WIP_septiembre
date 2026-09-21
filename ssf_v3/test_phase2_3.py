@@ -22,6 +22,7 @@ import tempfile
 
 import numpy as np
 import pandas as pd
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -99,7 +100,7 @@ def test_dynamics() -> None:
         RECORDER.check(reference.loc["NA|0|0|web", "estacional"] == 1 and reference.loc["EU|0|0|web", "estacional"] == 0,
                        "the pool reference carries the benchmark's verdict per estimation id")
         RECORDER.check(reference.loc["EU|1|1|web", "gate"] == "soporte", "a pool under the floor is gated by 'soporte'")
-        pooled = results["series"]["EU|SIG=neutral|*"]
+        pooled = results["series"]["EU|SIG=neutro|*"]
         RECORDER.check(abs(pooled["pipe"].median() - 210) < 1, "the monthly series of a relative sums EVERY matching series (210 = S1 + S2)")
 
 
@@ -108,8 +109,9 @@ def test_techniques() -> None:
     RECORDER.check("T15_level_seasonal" not in techniques.eligible_techniques(24, dict(estacional=0, tendencia=0))
                    and "T15_level_seasonal" in techniques.eligible_techniques(24, dict(estacional=1, tendencia=0)),
                    "the only seasonal technique competes only where the benchmark declared month effects")
-    RECORDER.check(len(techniques.CATALOGUE) == 8 and "T7_seasonal_idx" not in techniques.CATALOGUE and "T11_holt_winters" not in techniques.CATALOGUE,
-                   "the catalogue is reduced to level techniques (+ T15): 8 entries, no self-found seasonality")
+    RECORDER.check(len(techniques.CATALOGUE) == 10 and "T7_seasonal_idx" not in techniques.CATALOGUE
+                   and "T11_holt_winters" not in techniques.eligible_techniques(36, dict(estacional=0)) and "T12_theta" in techniques.eligible_techniques(12, {}),
+                   "10 techniques: level + Theta (always) + two seasonal ones gated by the benchmark; no self-found seasonality")
     RECORDER.check("T3_ma3" in techniques.eligible_techniques(3, {}), "the challenger is eligible with 3 months")
     months = pd.period_range("2023-01", periods=36, freq="M")
     seasonal = 0.7 + 0.1 * np.sin(2 * np.pi * (months.month - 1) / 12)

@@ -3,7 +3,7 @@
 Un documento corto para una idea que sostiene todo el framework: **una tasa de renovación
 medida sobre n clientes no puede ser más precisa que lo que n permite**, aunque la
 probabilidad real no cambie nada. Ese límite se puede calcular antes de predecir, y por
-eso es la primera medida que se persiste (`fu_summary`, por unidad) y la que fija el suelo
+eso es la primera medida que se persiste (`fact_fu` (columnas se_pp_max / moe_pp_max / moe_usd_max), por unidad) y la que fija el suelo
 de soporte (30) y los tramos del dial (`dial_buckets`).
 
 ## 1 · La idea en una frase
@@ -76,7 +76,7 @@ Los tramos son configurables a través de `z` (cambiar a 1,96 para 95 % sube los
 
 ## 5 · Dónde se usa
 
-- **`fu_summary`** (fase 0): las tres columnas por unidad. Sumables por lo que se quiera:
+- **`fact_fu` (columnas se_pp_max / moe_pp_max / moe_usd_max)** (fase 0): las tres columnas por unidad. Sumables por lo que se quiera:
   "cuánto margen de puro muestreo tiene el dinero de septiembre" es `SUM(moe_usd_max)` de
   esas unidades (suma lineal: cota conservadora; en cuadratura sería menor).
 - **`dial_buckets`** (fase 1, nivel 1): dinero proyectado por tramo de soporte de la serie,

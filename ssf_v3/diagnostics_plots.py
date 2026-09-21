@@ -39,6 +39,7 @@ if PROJECT_FOLDER not in sys.path:
 
 from audit_series import read_table
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PALETTE = ["#2E7D7D", "#3B8BC8", "#E8B84F"] + [matplotlib.colormaps["tab10"](i) for i in range(10)]
@@ -50,7 +51,7 @@ PERIOD_COLUMN_CANDIDATES = ("period", "periodo")
 def top_series(series_card: pd.DataFrame, top: int, by: str, min_history_months: int) -> pd.DataFrame:
     """The top series by projected money ('usd') or by history length ('history'),
     among trainable series with at least `min_history_months` of history."""
-    eligible = series_card[(series_card["ruta"] == "trainable") & (series_card["meses_historia"] >= min_history_months)]
+    eligible = series_card[(series_card["ruta"] == TREATMENT_PREDICTABLE) & (series_card["meses_historia"] >= min_history_months)]
     key = "usd_proyectado" if by == "usd" else "meses_historia"
     return eligible.sort_values([key, "usd_proyectado"], ascending=False).head(top)
 
@@ -58,7 +59,7 @@ def top_series(series_card: pd.DataFrame, top: int, by: str, min_history_months:
 def monthly_of(units: pd.DataFrame, series_id: str, configuration: Config) -> pd.DataFrame:
     """The real history months of one series: rate and pipeline units, indexed by period."""
     period = configuration.period_col
-    rows = units[(units["fs_id"] == series_id) & (units["sintetica"] == 0) & (units[configuration.dataset_role_col].isin(("train", "test")))]
+    rows = units[(units["fs_id"] == series_id) & (units["sintetica"] == 0) & (units[configuration.dataset_role_col].isin((ROLE_TRAIN, ROLE_TEST)))]
     monthly = rows.groupby(period).agg(pipe=(configuration.pipeline_units_col, "sum"), ren=(configuration.renewed_units_col, "sum")).sort_index()
     monthly["rate"] = np.where(monthly["pipe"] > 0, monthly["ren"] / monthly["pipe"].replace(0, np.nan), np.nan)
     monthly.index = pd.PeriodIndex(monthly.index, freq="M")
@@ -425,78 +426,10 @@ def pick_showcase_series(configuration: Config = None, results: dict = None, min
     mix = read_table("mix_shift_decomposition", configuration, results)
     if len(mix):
         worst_cell = mix.groupby("celda_id")["delta_composicion_pp"].apply(lambda s: s.abs().mean()).idxmax()
-        in_cell = card[(card["celda_id"] == worst_cell) & (card["ruta"] == "trainable")].sort_values("usd_proyectado", ascending=False)
+        in_cell = card[(card["celda_id"] == worst_cell) & (card["ruta"] == TREATMENT_PREDICTABLE)].sort_values("usd_proyectado", ascending=False)
         if len(in_cell):
             picks["mix_shift"] = in_cell.iloc[0]["fs_id"]
     return picks
-
-
-def showcase_sheets(configuration: Config = None, results: dict = None, output_folder: str = None) -> dict:
-    """The sheets of the showcase series. Returns {reason: path}."""
-    picks = pick_showcase_series(configuration, results)
-    paths = {}
-    for reason, series_id in picks.items():
-        print(f"\n[sheet] {reason}: {series_id}")
-        paths[reason] = series_sheet(series_id, configuration, results, output_folder)
-    return paths
-
-
-def guess_game(series_id: str, months_hidden: int = 6, configuration: Config = None, results: dict = None,
-               output_folder: str = None) -> tuple:
-    """Two figures for the room: (question) the series up to the origin, the hidden months
-    blank, "how would you predict them?"; (answer) the hidden truth, the challenger, the
-    champion, and the band. The machine sees exactly what the room sees."""
-    units = _units_frame(configuration, results)
-    monthly = monthly_of(units, series_id, configuration)
-    valid = monthly[monthly["rate"].notna()]
-    periods = pd.PeriodIndex(valid.index, freq="M")
-    rates, pipe = valid["rate"].to_numpy(dtype=float), valid["pipe"].to_numpy(dtype=float)
-    origin = len(valid) - months_hidden
-    x = np.arange(len(valid))
-    from techniques import month_numbers_of, predict, CATALOGUE
-    card = read_table("series_card", configuration, results)
-    row = card[card["fs_id"] == series_id].iloc[0]
-    technique = read_table("decision_technique", configuration, results)
-    technique = technique[technique["id_estimacion"] == row["id_estimacion"]]
-    champion = technique.iloc[0]["tecnica"] if len(technique) else "T3_ma3"
-    challenger = configuration.challenger_technique if configuration else "T2_mean"
-    dynamics = read_table("pool_reference", configuration, results)
-    dynamics = dynamics[dynamics["id_estimacion"] == row["id_estimacion"]]
-    labels = dict(estacional=int(dynamics.iloc[0]["estacional"]), tendencia=int(dynamics.iloc[0]["tendencia"])) if len(dynamics) else {}
-    month_numbers = month_numbers_of(periods)
-    folder = output_folder or os.path.join(configuration.outdir if configuration else ".", "diagnostics")
-    os.makedirs(folder, exist_ok=True)
-    safe = "".join(c if c.isalnum() else "_" for c in series_id)[:60]
-    paths = []
-    for stage in ("question", "answer"):
-        figure, axis = plt.subplots(figsize=(FIGURE_WIDTH, 6.5))
-        low, high = binomial_band(rates[:origin], pipe[:origin])
-        axis.fill_between(x[:origin], low, high, color="#3B8BC8", alpha=0.12)
-        axis.plot(x[:origin], rates[:origin], "-o", color="#2E7D7D", linewidth=2.4, markersize=4, label="what you know")
-        axis.axvspan(origin - 0.5, len(x) - 0.5, color="#E8B84F", alpha=0.15, label=f"the next {months_hidden} months")
-        if stage == "answer":
-            axis.plot(x[origin:], rates[origin:], "-o", color="black", linewidth=2.4, markersize=5, label="what happened")
-            for technique_id, colour, style in ((challenger, "#7F8C8D", "--"), (champion, "#C0392B", "-")):
-                if technique_id not in CATALOGUE:
-                    continue
-                predicted = [predict(technique_id, rates[:origin], month_numbers[:origin], h, labels) for h in range(1, months_hidden + 1)]
-                error = 100 * np.mean(np.abs(np.array(predicted) - rates[origin:]))
-                axis.plot(x[origin:], predicted, style, color=colour, linewidth=2.2, marker="s", markersize=4,
-                          label=f"{technique_id} · {CATALOGUE[technique_id][1]} · |error| {error:.1f} pp")
-        month_ticks(axis, periods)
-        axis.set_ylim(0, 1.0)
-        axis.set_ylabel("renewal rate", fontsize=12)
-        title = (f"{series_id[:60]} · n≈{row['n_propio']:.0f}/month · how would YOU predict the shaded months?" if stage == "question"
-                 else f"{series_id[:60]} · the answer: truth vs the challenger and the champion")
-        axis.set_title(title, fontsize=13, loc="left")
-        axis.legend(fontsize=9, loc="lower left", framealpha=0.9)
-        figure.tight_layout()
-        path = os.path.join(folder, f"game_{safe}_{stage}.png")
-        figure.savefig(path, dpi=110)
-        plt.close(figure)
-        paths.append(path)
-    print(f"[game] {series_id}: {paths[0]} / {paths[1]}")
-    return tuple(paths)
 
 
 def technique_error_by_horizon(key, configuration: Config = None, results: dict = None, output_folder: str = None) -> str:

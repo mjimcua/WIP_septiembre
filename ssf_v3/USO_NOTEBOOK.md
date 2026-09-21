@@ -104,7 +104,7 @@ s["summary"]; s["tables"]["parent_ladder"]; s["figure"]      # resumen · tablas
 
 Y los tres casos de muestra con `from diagnostics_plots import showcase_sheets; showcase_sheets(configuration)` (estacional, tendencia, cambio de nivel, mix-shift), y el juego «tú frente a la máquina» con `guess_game(fs_id, 6, configuration)`.
 
-**Hasta dónde ejecutar para ver las figuras**: `run_series_diagnostics` y `sheet` necesitan `series_card` (fase 1.3) y `decision_dynamics` (fase 2); la figura de hold-out y la técnica necesitan la fase 3. Con `run_analysis` completo todo está.
+**Hasta dónde ejecutar para ver las figuras**: `run_series_diagnostics` y `sheet` necesitan `series_card` (fase 1.3) y `pool_reference` (fase 2); la figura de hold-out y la técnica necesitan la fase 3. Con `run_analysis` completo todo está.
 
 
 ## Error por horizonte de un pool
@@ -145,4 +145,9 @@ results = run_analysis(configuration)
 
 Los defectos ya llevan el retador `T3_ma3`, el freno del signo (`signed_ladder_max_loss = 0.05`), el suelo de precisión (`own_rate_floor = 271`), los tramos de horizonte con tope 12 y `backtest_persist = "chosen"`. No hay que tocar nada más.
 
-Orden de revisión de atrás hacia delante: `business_summary` → `pipeline_summary` → `horizon_report_total` → `forecast_by_level` → `forecast_detail` (con `origen_pipeline`) → `sheet(<fila>)`.
+Orden de revisión de atrás hacia delante: el informe → `business_summary` → `pipeline_summary` → `horizon_report_total` → `forecast_by_region` → `top_movers` → `forecast_detail` (con `origen_pipeline`) → `sheet(<fila>)`.
+
+
+## El informe
+
+Al terminar, `run_analysis` escribe `<outdir>/informe/informe.md` con nueve figuras: es el documento para negocio. `results["informe"]` tiene la ruta. `INFORME.md` explica cada capítulo.

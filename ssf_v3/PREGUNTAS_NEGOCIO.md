@@ -84,6 +84,26 @@ acierta igual, el framework aporta la banda y la trazabilidad, no el número; si
 peor, aporta también el número. Y explica de dónde sale la diferencia con la cifra de
 negocio cuando la hay.
 
+## 11 · ¿Dónde están las oportunidades y los riesgos más grandes ahora mismo?
+
+`top_movers`, por tipo y rango: `deterioro` / `mejora` (la tasa que prevemos para los
+próximos 3 meses contra la realizada en los últimos 3 cerrados, en pp y en dólares sobre
+12 meses de pipeline), `senal_negativa` (lo que las series con señal renuevan por debajo
+de los neutros de su celda × su pipeline: el dinero que una acción de recuperación
+disputa, como cota superior), `banda_ancha` (dónde una sorpresa cuesta más), `sesgo_examen`
+(los pools que el examen mostró que fallamos sistemáticamente) y `precio` (celdas lejos de
+la revalorización media). Lectura: cada tipo es una palanca; las diez primeras filas de
+cada uno son la lista de acciones del mes.
+
+## 12 · ¿Cuánto riesgo entra en la cartera porque las señales todavía no han aparecido?
+
+`signal_adjustment` (celda × mes × señal: proporción actual, final esperada, pendiente,
+unidades que migran, ajuste $) y `signal_alerts`. En `business_summary`,
+`forecast_ajustado_usd` frente a `forecast_usd`: la diferencia es lo que costará la
+maduración de las señales si la composición final es la de los últimos doce meses.
+Lectura: las alertas de `nivel_anomalo` son meses que ya van peor de lo habitual; las de
+`tendencia`, señales que crecen mes a mes en los cierres.
+
 ## Y una que responde por el camino
 
 **¿De dónde sale cada número?** `sheet(clave)`: la ficha de cualquier serie, unidad, fila,

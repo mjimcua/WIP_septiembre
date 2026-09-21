@@ -1,5 +1,5 @@
-salida/
-salida_test/
-salida_test_multidim/
 __pycache__/
 *.pyc
+salida/
+salida_test*/
+*.db

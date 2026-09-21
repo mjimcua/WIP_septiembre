@@ -34,6 +34,7 @@ if PROJECT_FOLDER not in sys.path:
 
 from audit_series import filter_for_series, read_table, tell
 from config import Config, hash_key
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from diagnostics_plots import series_sheet, sheet_summary
 
 KEY_KINDS = ("fs_key", "estimacion_key", "celda_key", "uplift_cell_key", "fu_key", "fu_comb_key")

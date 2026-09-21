@@ -1,12 +1,11 @@
 """techniques.py — SFF v3 · the catalogue of forecasting techniques (shared by ANALYSIS and RUN).
 
 REDUCED ON PURPOSE. The seasonality benchmark (phase 2) decides ONCE, on the big series,
-whether the rate has a material calendar shape. The catalogue is therefore level
-techniques (recent level, smoothed level, level with a damped slope) plus ONE seasonal
-technique (T15: recent level + month effect) that competes only in the series the
-benchmark declared seasonal. No per-pool seasonal/trend diagnostics; no technique that
-"finds" a season on its own — a time-series method always returns a seasonal component,
-whether or not one exists.
+whether the rate has a material calendar shape. The catalogue is level techniques (recent
+level, smoothed level, level with a damped slope), two classic time-series methods that
+never invent a season (Theta, Holt damped), and two seasonal ones (T15: recent level +
+month effect; T11: Holt-Winters) that compete only in the series the benchmark declared
+seasonal. No technique "finds" a season on its own.
 
 Every technique predicts the rate of a monthly series at horizon h. They work on the
 LOGIT of the rate: no technique can predict above 100 % or below 0 %, intervals become
@@ -34,6 +33,7 @@ calls them millions of times.
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 from binomial_reference import inverse_logit, logit
 
@@ -47,7 +47,7 @@ THETA_WEIGHT = 0.5
 CROSTON_ZERO_SHARE = 0.30
 TEMPORAL_CREDIBILITY_K = 6.0
 RECENT_WINDOW_MONTHS = 6
-FAMILY_RANK = {"time_series": 3, "smoothing": 2, "average": 1}
+FAMILY_RANK = {UNIVERSE_TIME_SERIES: 3, "smoothing": 2, "average": 1}
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────────
@@ -60,15 +60,6 @@ def damping_weight(horizon: int, damping: float) -> float:
 def target_calendar_month(month_numbers: np.ndarray, horizon: int) -> int:
     """The calendar month h months after the last observed one."""
     return int((month_numbers[-1] - 1 + horizon) % MONTHS_PER_CYCLE + 1)
-
-
-def seasonal_index_logit(month_numbers: np.ndarray, values: np.ndarray, target_month: int) -> float:
-    """Additive seasonal index on the logit scale: mean of the target calendar month
-    minus the overall mean. 0 when the calendar month was never observed."""
-    same = values[month_numbers == target_month]
-    if len(same) == 0:
-        return 0.0
-    return float(np.mean(same) - np.mean(values))
 
 
 def seasonal_profile_logit(month_numbers: np.ndarray, values: np.ndarray) -> np.ndarray:
@@ -129,6 +120,34 @@ def t15_recent_level_seasonal(y, months, h, dyn):
     return float(np.mean(level_series[-3:]) + profile[target_calendar_month(months, h) - 1])
 
 
+def t11_holt_winters_additive(y, months, h, dyn):
+    """Additive Holt-Winters on the logit, seasonal period 12, damped trend: the full
+    seasonal time-series model. Competes only where the benchmark declared month effects."""
+    season = seasonal_profile_logit(months[:MONTHS_PER_CYCLE], y[:MONTHS_PER_CYCLE])
+    level, trend = float(np.mean(y[:MONTHS_PER_CYCLE])), 0.0
+    for index in range(MONTHS_PER_CYCLE, len(y)):
+        month = int(months[index])
+        previous_level = level
+        level = HW_ALPHA * (y[index] - season[month - 1]) + (1 - HW_ALPHA) * (level + HOLT_DAMPING * trend)
+        trend = HW_BETA * (level - previous_level) + (1 - HW_BETA) * HOLT_DAMPING * trend
+        season[month - 1] = HW_GAMMA * (y[index] - level) + (1 - HW_GAMMA) * season[month - 1]
+    return float(level + trend * damping_weight(h, HOLT_DAMPING) + season[target_calendar_month(months, h) - 1])
+
+
+def t8_damped_trend(y, months, h, dyn):
+    """Linear trend fitted on the whole history, extrapolated with damping (used inside Theta)."""
+    x = np.arange(len(y), dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    return float(intercept + slope * (len(y) - 1) + slope * damping_weight(h, HOLT_DAMPING))
+
+
+def t12_theta(y, months, h, dyn):
+    """Theta (Assimakopoulos & Nikolopoulos 2000), simple form: the average of the damped
+    linear trend and simple exponential smoothing. A classic, non-seasonal time-series
+    method: it follows level and trend, it never invents a season."""
+    return float(THETA_WEIGHT * t8_damped_trend(y, months, h, dyn) + (1 - THETA_WEIGHT) * t9_ses(y, months, h, dyn))
+
+
 def t14_temporal_credibility(y, months, h, dyn):
     """Recent window vs whole history, blended with z = n/(n+k) on the number of recent months."""
     recent = y[-RECENT_WINDOW_MONTHS:]
@@ -145,8 +164,10 @@ CATALOGUE = {
     "T4_ewma":          ("smoothing",   "exponentially weighted mean, half-life 3",   4,  None,         t4_ewma),
     "T9_ses":           ("smoothing",   "simple exponential smoothing",               4,  None,         t9_ses),
     "T10_holt_damped":  ("smoothing",   "Holt damped trend (level with a damped slope)", 12, None,      t10_holt_damped),
+    "T12_theta":        (UNIVERSE_TIME_SERIES, "Theta: damped trend + exponential smoothing",  12, None,         t12_theta),
+    "T11_holt_winters": (UNIVERSE_TIME_SERIES, "Holt-Winters additive on logit, damped (only where the benchmark found seasonality)", 24, "estacional", t11_holt_winters_additive),
     "T14_temporal_cred":("average",     "recent window with temporal credibility",    6,  None,         t14_temporal_credibility),
-    "T15_level_seasonal":("time_series", "recent level + month effect (only where the benchmark found seasonality)", 13, "estacional", t15_recent_level_seasonal),
+    "T15_level_seasonal":(UNIVERSE_TIME_SERIES, "recent level + month effect (only where the benchmark found seasonality)", 13, "estacional", t15_recent_level_seasonal),
 }
 
 
@@ -154,7 +175,7 @@ CATALOGUE = {
 # (None = the whole history). Far horizons prefer memory: within the margin, the
 # technique that has seen more of the past wins.
 MEMORY_MONTHS = {"T2_mean": None, "T3_ma3": 3, "T3_ma6": 6, "T4_ewma": 9, "T9_ses": 9, "T10_holt_damped": None,
-                 "T14_temporal_cred": 6, "T15_level_seasonal": None}
+                 "T12_theta": None, "T11_holt_winters": None, "T14_temporal_cred": 6, "T15_level_seasonal": None}
 
 
 def memory_rank(technique_id: str) -> int:

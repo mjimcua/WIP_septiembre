@@ -35,6 +35,7 @@ sys.path.insert(0, PROJECT_FOLDER)
 
 from checks import CheckRecorder
 from config import Config, hash_key
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from raw_data_validation import (apply_current_month_doctrine,
                                  aggregate_to_forecast_units, build_fine_table,
                                  build_key_lookups, label_universe_and_routes,
@@ -53,6 +54,12 @@ TEST_TAXONOMY = dict(business_mandatory_dims=["region"],
 PRODUCTION_COLUMNS = Config()
 
 RECORDER = CheckRecorder()
+
+
+def pattern(*roles) -> str:
+    """The coverage pattern of a series: its roles sorted and joined with '_'."""
+    return "_".join(sorted(roles))
+
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────────────
@@ -85,7 +92,7 @@ def build_test_raw() -> pd.DataFrame:
         "channel":           ["web", "web", "web", "web", "web", "tele"],
         "discount":          ["d0", "d40", "d0", "d0", "d0", "d0"],
         "period":            ["2026-01", "2026-01", "2026-02", "2026-03", "2026-03", "2026-04"],
-        "dataset_role":      ["train", "train", "test", "projection", "test", "projection"],
+        "dataset_role":      [ROLE_TRAIN, ROLE_TRAIN, ROLE_TEST, ROLE_PROJECTION, ROLE_TEST, ROLE_PROJECTION],
         "is_current_month":  [0, 0, 0, 1, 1, 0],
         "flag_time_series":  [0, 0, 0, 0, 0, 1],
         "total_tr_units":    [10.0, 5.0, 8.0, 6.0, 4.0, 3.0],
@@ -191,7 +198,7 @@ def test_validate_raw() -> None:
                    "several blocking problems are reported in one message")
 
     # an empty role is a warning, not a stop
-    raw_without_test = raw[raw["dataset_role"] != "test"].reset_index(drop=True)
+    raw_without_test = raw[raw["dataset_role"] != ROLE_TEST].reset_index(drop=True)
     empty_role_accepted = True
     try:
         validate_raw(raw_without_test, configuration)
@@ -216,13 +223,13 @@ def test_current_month_doctrine() -> None:
 
     # the current month becomes projection, whatever it was labeled
     RECORDER.check((conditioned.loc[conditioned["is_current_month"] == 1, "dataset_role"]
-                    == "projection").all(),
+                    == ROLE_PROJECTION).all(),
                    "every current-month row is reassigned to projection")
-    RECORDER.check(conditioned.loc[4, "dataset_role"] == "projection",
+    RECORDER.check(conditioned.loc[4, "dataset_role"] == ROLE_PROJECTION,
                    "a current-month row labeled test is reassigned (never test)")
 
     # renewals and reacquisitions of the future are wiped
-    projection_rows = conditioned[conditioned["dataset_role"] == "projection"]
+    projection_rows = conditioned[conditioned["dataset_role"] == ROLE_PROJECTION]
     wiped_columns = ["total_renewed_units", "total_renewed_usd",
                      "total_reacquired_units", "total_reacquired_usd"]
     RECORDER.check(projection_rows[wiped_columns].isna().all().all(),
@@ -231,12 +238,12 @@ def test_current_month_doctrine() -> None:
                    "the pipeline of projection rows is kept (it is known data)")
 
     # history is untouched
-    history_rows = conditioned[conditioned["dataset_role"] != "projection"]
+    history_rows = conditioned[conditioned["dataset_role"] != ROLE_PROJECTION]
     original_history = validated.loc[history_rows.index]
     RECORDER.check(history_rows[wiped_columns].equals(original_history[wiped_columns]),
                    "train and test rows keep their results untouched")
     RECORDER.check(len(conditioned) == len(validated), "no row is added or removed")
-    RECORDER.check((validated.loc[4, "dataset_role"] == "test")
+    RECORDER.check((validated.loc[4, "dataset_role"] == ROLE_TEST)
                    and validated.loc[3, "total_renewed_units"] == 2.0,
                    "the input frame is not modified (a copy is returned)")
 
@@ -244,14 +251,14 @@ def test_current_month_doctrine() -> None:
     validated_text_flag = validated.copy()
     validated_text_flag["is_current_month"] = validated_text_flag["is_current_month"].map({1: "true", 0: "no"})
     conditioned_text_flag = apply_current_month_doctrine(validated_text_flag, configuration)
-    RECORDER.check(conditioned_text_flag.loc[4, "dataset_role"] == "projection",
+    RECORDER.check(conditioned_text_flag.loc[4, "dataset_role"] == ROLE_PROJECTION,
                    "a textual current-month flag ('true') is recognized")
 
     # with no current month flagged, only pre-labeled projection rows are wiped
     validated_no_flag = validated.copy()
     validated_no_flag["is_current_month"] = 0
     conditioned_no_flag = apply_current_month_doctrine(validated_no_flag, configuration)
-    RECORDER.check(conditioned_no_flag.loc[4, "dataset_role"] == "test"
+    RECORDER.check(conditioned_no_flag.loc[4, "dataset_role"] == ROLE_TEST
                    and np.isnan(conditioned_no_flag.loc[3, "total_renewed_units"]),
                    "with no current month flagged, nothing is reassigned and projection is still wiped")
 
@@ -343,7 +350,7 @@ def test_aggregate_to_forecast_units() -> None:
 
     # an inconsistent extract (role varying inside a unit) is caught by uniqueness
     inconsistent_fine = fine_table.copy()
-    inconsistent_fine.loc[1, "dataset_role"] = "projection"
+    inconsistent_fine.loc[1, "dataset_role"] = ROLE_PROJECTION
     inconsistency_caught = False
     try:
         aggregate_to_forecast_units(inconsistent_fine, configuration)
@@ -384,20 +391,20 @@ def test_build_key_lookups() -> None:
 
 def test_routes_and_labels() -> None:
     RECORDER.start_block("0.3 · route_from_coverage")
-    RECORDER.check(route_from_coverage("projection_test_train") == "trainable",
+    RECORDER.check(route_from_coverage(pattern(ROLE_PROJECTION, ROLE_TEST, ROLE_TRAIN)) == TREATMENT_PREDICTABLE,
                    "history + future → trainable")
-    RECORDER.check(route_from_coverage("projection_train") == "trainable",
+    RECORDER.check(route_from_coverage(pattern(ROLE_PROJECTION, ROLE_TRAIN)) == TREATMENT_PREDICTABLE,
                    "train + projection (no test) → trainable")
-    RECORDER.check(route_from_coverage("projection") == "heuristic",
+    RECORDER.check(route_from_coverage(ROLE_PROJECTION) == TREATMENT_FUTURE_ONLY,
                    "future without history → heuristic")
-    RECORDER.check(route_from_coverage("projection_test") == "trainable",
+    RECORDER.check(route_from_coverage(pattern(ROLE_PROJECTION, ROLE_TEST)) == TREATMENT_PREDICTABLE,
                    "test rows ARE closed months: test + projection → trainable (the forecast learns from them)")
-    RECORDER.check(route_from_coverage("pending_close_projection") == "heuristic",
+    RECORDER.check(route_from_coverage(pattern(ROLE_PENDING, ROLE_PROJECTION)) == TREATMENT_FUTURE_ONLY,
                    "a pending month is not closed: pending + projection without train/test → heuristic")
-    RECORDER.check(route_from_coverage("pending_close_train") == "trainable",
+    RECORDER.check(route_from_coverage(pattern(ROLE_PENDING, ROLE_TRAIN)) == TREATMENT_PREDICTABLE,
                    "a pending month is something to predict: train + pending → trainable")
-    RECORDER.check(route_from_coverage("train") == "no_impact"
-                   and route_from_coverage("test_train") == "no_impact",
+    RECORDER.check(route_from_coverage(ROLE_TRAIN) == TREATMENT_HISTORY_ONLY
+                   and route_from_coverage(pattern(ROLE_TEST, ROLE_TRAIN)) == TREATMENT_HISTORY_ONLY,
                    "no projection rows → no_impact")
 
     RECORDER.start_block("0.3 · label_universe_and_routes")
@@ -412,13 +419,13 @@ def test_routes_and_labels() -> None:
     by_id = labeled.set_index("fu_id")
     RECORDER.check(by_id.loc["EU|0|web|2026-01", "fs_id"] == "EU|0|web",
                    "fs_id = the rate series columns joined (no month)")
-    RECORDER.check(by_id.loc["EU|0|web|2026-01", "cobertura"] == "projection_test_train",
+    RECORDER.check(by_id.loc["EU|0|web|2026-01", "cobertura"] == pattern(ROLE_PROJECTION, ROLE_TEST, ROLE_TRAIN),
                    "coverage = the sorted roles of the series joined with '_'")
-    RECORDER.check(by_id.loc["EU|0|web|2026-01", "ruta"] == "trainable",
+    RECORDER.check(by_id.loc["EU|0|web|2026-01", "ruta"] == TREATMENT_PREDICTABLE,
                    "a series with history and future is trainable")
-    RECORDER.check(by_id.loc["EU|1|web|2026-03", "ruta"] == "heuristic",
+    RECORDER.check(by_id.loc["EU|1|web|2026-03", "ruta"] == TREATMENT_FUTURE_ONLY,
                    "a series present only in the (reassigned) current month is heuristic")
-    RECORDER.check(by_id.loc["NA|0|tele|2026-04", "universo"] == "time_series"
+    RECORDER.check(by_id.loc["NA|0|tele|2026-04", "universo"] == UNIVERSE_TIME_SERIES
                    and by_id.loc["EU|0|web|2026-01", "universo"] == "normal",
                    "universo comes from the time-series flag")
     RECORDER.check((labeled.groupby("fs_id")["cobertura"].nunique() == 1).all(),

@@ -17,25 +17,17 @@ import pandas as pd
 
 from binomial_reference import wilson_half_width_pp
 from config import Config, explain, hash_key
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-PROJECTION_ROLE = "projection"
-PENDING_ROLE = "pending_close"
-TRUTH_ROLES = ("train", "test")          # closed months: the only truth
-ROUTE_TRAINABLE = "trainable"
-UNIVERSE_NORMAL = "normal"
 # Sign labels persisted in `signo`
-SIGN_NEUTRAL = "neutral"
-SIGN_NEGATIVE = "neg"
-SIGN_POSITIVE = "pos"
-SIGN_MIXED = "mixed"
 
 
 def sign_of_series(active_signs: set) -> str:
     """The sign of a series from the signs of its ACTIVE timevarying flags.
 
     INPUT:   active_signs — subset of {"negative", "positive"}.
-    OUTPUT:  "neutral" (no flag), "neg", "pos", or "mixed" (both — never pooled).
+    OUTPUT:  SIGN_NEUTRAL (no flag), SIGN_NEGATIVE, SIGN_POSITIVE, or SIGN_MIXED (both — never pooled).
     """
     if not active_signs:
         return SIGN_NEUTRAL
@@ -81,7 +73,7 @@ def fill_history_gaps(labeled_units: pd.DataFrame, configuration: Config) -> pd.
     units = labeled_units.copy()
     units["sintetica"] = 0
     period_column, role_column = configuration.period_col, configuration.dataset_role_col
-    trainable = units[(units["universo"] == UNIVERSE_NORMAL) & (units["ruta"] == ROUTE_TRAINABLE)
+    trainable = units[(units["universo"] == UNIVERSE_NORMAL) & (units["ruta"] == TREATMENT_PREDICTABLE)
                       & (units[role_column].isin(TRUTH_ROLES))]
     if trainable.empty:
         return units
@@ -147,7 +139,7 @@ def build_series_summary(units: pd.DataFrame, configuration: Config) -> pd.DataF
     summary["tasa_propia"] = np.where(summary["pipe"] > 0, summary["ren"] / summary["pipe"].replace(0, np.nan), np.nan)
     summary["error_binomial_pp"] = [wilson_half_width_pp(rate if np.isfinite(rate) else 0.5, support, configuration.z)
                                     for rate, support in zip(summary["tasa_propia"], summary["n_propio"])]
-    projected = (units[units[role_column].isin((PROJECTION_ROLE, PENDING_ROLE))]
+    projected = (units[units[role_column].isin((ROLE_PROJECTION, ROLE_PENDING))]
                  .groupby("fs_id")[configuration.pipeline_usd_col].sum().rename("usd_proyectado"))
     summary = summary.merge(projected, on="fs_id", how="left")
     # series present only in the projection (heuristic) get a row too: they carry money
@@ -185,7 +177,7 @@ def build_rate_series(labeled_units: pd.DataFrame, configuration: Config) -> tup
     gaps[configuration.period_col] = gaps[configuration.period_col].astype(str)
     configuration.write(gaps, "fact_fu_gaps")
     configuration.write(summary, "forecast_series_raw_summary")
-    below = summary[(summary["ruta"] == ROUTE_TRAINABLE) & (summary["n_propio"] < configuration.support_floor)]
+    below = summary[(summary["ruta"] == TREATMENT_PREDICTABLE) & (summary["n_propio"] < configuration.support_floor)]
     print(f"[1.1] {len(summary)} series · synthetic gap rows {int(units['sintetica'].sum())} (rate undefined) · "
           f"{len(below)} trainable series below the floor carry ${below['usd_proyectado'].sum():,.0f} "
           f"of ${summary['usd_proyectado'].sum():,.0f} projected")

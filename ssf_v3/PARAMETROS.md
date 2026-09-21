@@ -20,7 +20,6 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 
 | Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
 |---|---|---|
-| `gap_rate_policy` | `"no_rate"` | A missing month means "no contracts were due": the rate is undefined (0/0), NOT 0 %. "no_rate" is the only implemented policy (the synthetic gap row keeps the series continuous but its rate is NaN, so no technique ever sees a false 0 % month). The field exists so the decision is visible, not so it can be flipped. |
 
 ## phase 1.2 · dimension separation and mix-shift (ANALYSIS)
 
@@ -107,6 +106,12 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 | `acquisition_min_pairs` | `3` | The simulated pipeline is valued at the RENEWED price: a contract renewed in 2026 at pipeline AUV × uplift is worth that when it falls due in 2027 (observed renewed AUV where there is truth, pipeline AUV × the cell's uplift where there is not). The 2027 forecast then applies rate × uplift again on that revalued pipeline. Pairs (t, t − term) a series needs for its own acquisition factor; below it the global one. 3 = a median that is not a single point. |
 | `band_narrowing_tolerance_pct` | `1.0` | The total's relative band may narrow from one month to the next when the mix leans toward well-supported series; a narrowing beyond this many percentage points of the total is flagged in horizon_report_total.banda_monotona. Per id the band never narrows (by construction); this is a mix signal, not a calibration one. |
 
+## phase 5.9 · maturation of the signals (RUN)
+
+| Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
+|---|---|---|
+| `signal_final_window_months` | `12` | The final composition of a cell (neutral / softcancel / dormant…) is measured over the last N closed months; the pending maturation of a future month is that final share minus today's share. 12 = a full year of expiries. |
+
 ## sheets drawn at the end of every analysis
 
 | Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
@@ -145,6 +150,8 @@ No son decisiones de negocio: son parte de la definición de cada técnica o de 
 | `techniques.py` | `EWMA_HALFLIFE_MONTHS` | 3 | vida media de la media exponencial (T4) |
 | `techniques.py` | `SES_ALPHA` | 0.3 | suavizado exponencial simple (T9, T12) |
 | `techniques.py` | `HOLT_ALPHA / HOLT_BETA / HOLT_DAMPING` | 0.3 / 0.1 / 0.9 | Holt amortiguado (T10); el damping 0.9 también amortigua T5 y T8 |
+| `techniques.py` | `HW_ALPHA / HW_BETA / HW_GAMMA` | 0.3 / 0.05 / 0.2 | Holt-Winters aditivo en logit (T11) |
+| `techniques.py` | `THETA_WEIGHT` | 0.5 | peso de la tendencia amortiguada frente a SES en Theta (T12) |
 | `techniques.py` | `TEMPORAL_CREDIBILITY_K / RECENT_WINDOW_MONTHS` | 6 / 6 | credibilidad temporal (T14): ventana reciente y su k |
 | `techniques.py` | `CATALOGUE[...].historia_minima / requiere` | por técnica | elegibilidad: meses mínimos y etiqueta necesaria (`dim_tecnica`) |
 | `techniques.py` | `MONTHS_PER_CYCLE` | 12 | el ciclo del efecto de mes (T15) |

@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from config import Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -34,7 +35,21 @@ PERCENTAGE_POINTS = 100
 REFERENCE_TABLE_NAME = "forecast_units_raw_summary"
 
 
+def add_support_reference(labeled_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """The three bound columns (se_pp_max, moe_pp_max, moe_usd_max) added to the units
+    frame itself, so `fact_fu` carries them and no separate table is needed."""
+    reference = compute_support_reference(labeled_units, configuration)
+    return labeled_units.merge(reference[["fu_id", "se_pp_max", "moe_pp_max", "moe_usd_max"]], on="fu_id", how="left")
+
+
 def build_support_reference(labeled_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """Kept for the tests and notebooks that call it: computes and PERSISTS the reference table."""
+    reference = compute_support_reference(labeled_units, configuration)
+    configuration.write(reference, "forecast_units_raw_summary")
+    return reference
+
+
+def compute_support_reference(labeled_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Persist the immutable reference: support and worst-case binomial error per unit.
 
     INPUT:   labeled_units — from `label_universe_and_routes` · configuration — uses

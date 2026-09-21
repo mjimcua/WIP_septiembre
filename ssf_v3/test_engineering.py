@@ -28,6 +28,7 @@ sys.path.insert(0, PROJECT_FOLDER)
 
 from checks import CheckRecorder
 from config import PHYSICAL_TABLE_NAMES, Config, hash_key
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from pipeline import DECISION_TABLES, run_analysis, run_pipeline
 from synthetic_v3 import build_raw
 from test_fixtures import quiet
@@ -96,7 +97,7 @@ def test_referential_integrity(context: dict) -> None:
     RECORDER.check(set(bridge["fu_comb_key"]) == set(fine["fu_comb_key"]), "key_bridge covers every raw row exactly")
     RECORDER.check(set(detail["fs_key"]) <= set(card["fs_key"]), "every forecast row's series exists in series_card")
     reference = read(configuration, "pool_reference")
-    trainable_with_history = card[(card["ruta"] == "trainable") & (card["meses_historia"] > 0)]
+    trainable_with_history = card[(card["ruta"] == TREATMENT_PREDICTABLE) & (card["meses_historia"] > 0)]
     RECORDER.check(set(trainable_with_history["estimacion_key"]) <= set(reference["estimacion_key"]),
                    "every trainable series' estimation id has a pool reference (heuristic series have no history to pool)")
     technique = read(configuration, "decision_technique")

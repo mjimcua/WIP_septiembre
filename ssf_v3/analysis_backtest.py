@@ -32,11 +32,10 @@ import pandas as pd
 
 from binomial_reference import binomial_se_pp, inverse_logit, logit, weighted_quantile
 from config import Config, explain
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from techniques import CATALOGUE, eligible_techniques, family_rank, memory_rank, month_numbers_of, technique_dimension
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-CHALLENGER_ORIGIN = "retador"
-CHAMPION_ORIGIN = "campeon"
 # (intermittent_zero_share is a Config parameter: see config.py, phase 3)
 
 
@@ -395,7 +394,7 @@ def holdout_aggregate(holdout: pd.DataFrame) -> pd.DataFrame:
 
 def holdout_start_month(backtest_long: pd.DataFrame, configuration: Config, first_test_month: str = None) -> str:
     """The first hold-out month: `backtest_test_start` if set; else the first month with
-    role 'test' in the extract; else the last `holdout_default_months` target months."""
+    role ROLE_TEST in the extract; else the last `holdout_default_months` target months."""
     if configuration.backtest_test_start:
         return str(configuration.backtest_test_start)
     if first_test_month:
@@ -443,7 +442,7 @@ def run_backtest_analysis(monthly_series: dict, pool_reference: pd.DataFrame, co
     configuration.write(technique_dimension(), "dim_tecnica")
     screen_horizons = sorted({h for h in configuration.backtest_screen_horizons if h in horizons} | {horizons[0]})
     # the hold-out cut is known before predicting: `backtest_test_start`, else the first
-    # 'test' month of the extract; the target window is counted before it
+    # ROLE_TEST month of the extract; the target window is counted before it
     provisional = holdout_start_month(pd.DataFrame({"mes_objetivo": []}), configuration, first_test_month) if (configuration.backtest_test_start or first_test_month) else None
     screen = rolling_origin_backtest(monthly_series, pool_reference, screen_horizons, configuration, holdout_start=provisional)
     holdout_start = holdout_start_month(screen, configuration, first_test_month) if len(screen) else None

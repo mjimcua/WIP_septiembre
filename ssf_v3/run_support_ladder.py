@@ -37,23 +37,14 @@ import pandas as pd
 
 from binomial_reference import binomial_se_pp, wilson_half_width_pp
 from config import ID_FIELD_SEPARATOR, Config, explain
-from run_rate_series import (PROJECTION_ROLE, ROUTE_TRAINABLE, SIGN_MIXED, SIGN_NEUTRAL,
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
+from run_rate_series import (ROLE_PROJECTION, TREATMENT_PREDICTABLE, SIGN_MIXED, SIGN_NEUTRAL,
                              UNIVERSE_NORMAL)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 WILDCARD = "*"
 SIGN_FIELD_PREFIX = "SIG="
 # Risk levels (persisted in `nivel_riesgo`)
-LEVEL_OWN = "A_propio"
-LEVEL_OWN_SHORT = "A2_propio_corto"
-LEVEL_OWN_REINFORCED = "A3_propio_reforzado"
-LEVEL_BORROWED = "B_prestado"
-LEVEL_FAR = "C_lejano"
-LEVEL_NO_HISTORY = "D_sin_historia"
-LEVEL_SIGNED_UNDER_FLOOR = "S_signo_bajo_suelo"
-LEVEL_MIXED = "M_signo_mixto"
-LEVEL_NO_IMPACT = "N_sin_impacto"
-LEVEL_TIME_SERIES = "T_universo_ts"
 # (close_relative_max_rung and own_level_min_history_months are Config parameters)
 
 
@@ -339,11 +330,11 @@ def print_level_definitions() -> None:
 def risk_level(series: pd.Series, configuration: Config) -> str:
     """The predictive-quality level of a series. Rules in LEVEL_DEFINITIONS, in order:
     route / universe first, then sign, then whether the floor was reached, then the rung."""
-    if series["ruta"] == "no_impact":
+    if series["ruta"] == TREATMENT_HISTORY_ONLY:
         return LEVEL_NO_IMPACT
     if series["universo"] != UNIVERSE_NORMAL:
         return LEVEL_TIME_SERIES
-    if series["ruta"] == "heuristic" or series["meses_historia"] == 0:
+    if series["ruta"] == TREATMENT_FUTURE_ONLY or series["meses_historia"] == 0:
         return LEVEL_NO_HISTORY
     if series["signo"] == SIGN_MIXED:
         return LEVEL_MIXED
@@ -443,7 +434,7 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
                      if "perdida_secuencial" in rate_branch.columns else {})
     extras = [d for d in configuration.extra_renovacion]
     annullable = min(extras, key=lambda d: unique.get(d, 1.0)) if extras else None
-    trainable = series_summary[(series_summary["ruta"] == ROUTE_TRAINABLE) & (series_summary["universo"] == UNIVERSE_NORMAL)]
+    trainable = series_summary[(series_summary["ruta"] == TREATMENT_PREDICTABLE) & (series_summary["universo"] == UNIVERSE_NORMAL)]
     patterns = series_patterns_table(trainable, units, configuration, annullable, order, collapse_loss)
     pools = pool_support(units, patterns, configuration)
     decision_support, parent_ladder = climb_ladder(trainable, patterns, pools, configuration)
@@ -462,7 +453,7 @@ def run_support_ladder(units: pd.DataFrame, series_summary: pd.DataFrame, decisi
     configuration.write(chain, "support_chain")
     configuration.write(card, "series_card")
     configuration.write(report, "risk_levels_report")
-    chosen = decision_support[decision_support["ruta"] == ROUTE_TRAINABLE]
+    chosen = decision_support[decision_support["ruta"] == TREATMENT_PREDICTABLE]
     print(f"[1.3] ladder: collapse order {order} · annullable extra {annullable!r} · "
           f"{(chosen['alcanzo_suelo'] == 1).mean():.0%} of trainable series reached the floor · "
           f"median rung {chosen['peldano'].median():.0f}")

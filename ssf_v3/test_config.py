@@ -43,6 +43,7 @@ sys.path.insert(0, PROJECT_FOLDER)
 from checks import CheckRecorder
 from config import (Config, PHYSICAL_TABLE_NAMES, hash_key,
                     join_columns)
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -70,7 +71,7 @@ EXPECTED_PRODUCTION_EXTRA_REVALORIZACION = [
     "price_cap", "msrp_increased", "discount_interval", "prev_OperationGroup"]
 EXPECTED_BUSINESS_PARAMETERS = {"support_floor": 30.0, "z": 1.645, "rate_cap": 0.95,
                                 "k_cred": 60.0, "uplift_floor": 30.0, "uplift_cap": 3.0,
-                                "gap_rate_policy": "no_rate", "backtest_max_targets": 6}
+                                "backtest_max_targets": 6}
 
 # Physical names the reference and the BI already depend on. Sampled, not exhaustive: the
 # full registry is checked for size and for prefixing.
@@ -82,8 +83,8 @@ EXPECTED_PHYSICAL_NAMES = {"forecast_units_raw_summary": "sff_fu_summary",
                            "fact_fine": "sff_fact_fine"}
 
 # Size of the physical-name registry: the 36 tables of v3 (phase 0: 10, with the level-0/1
-# profiles · phase 1: 11 · phase 2: 4 · phase 3: 8 · phase 4: 2 · phase 5: 12).
-EXPECTED_REGISTRY_SIZE = 47
+# profiles · phase 1: 11 · phase 2: 4 · phase 3: 8 · phase 4: 2 · phase 5: 19).
+EXPECTED_REGISTRY_SIZE = 54
 DECISION_TABLES = ["decision_eta2", "decision_support", "decision_estacionalidad", "pool_reference", "decision_technique",
                    "decision_error_bands", "decision_uplift", "decision_aggregate_bands"]
 
@@ -120,7 +121,7 @@ def build_test_raw(configuration: Config) -> pd.DataFrame:
     """
     # [1] context
     row_values = {configuration.period_col: ["2026-01", "2026-02"],
-                  configuration.dataset_role_col: ["train", "projection"],
+                  configuration.dataset_role_col: [ROLE_TRAIN, ROLE_PROJECTION],
                   configuration.current_month_col: [0, 1],
                   configuration.flag_time_series_col: [0, 0]}
 
@@ -159,7 +160,7 @@ def test_taxonomy_exclusions() -> None:
 
     # an invalid sign cannot be grouped in L1
     RECORDER.check_raises(
-        lambda: build_test_config(structural_timevarying_dims={"softcancel": "neg"}),
+        lambda: build_test_config(structural_timevarying_dims={"softcancel": SIGN_NEGATIVE}),
         "softcancel", "a timevarying sign outside negative/positive is rejected")
     RECORDER.check_raises(
         lambda: build_test_config(structural_timevarying_dims={"softcancel": ""}),

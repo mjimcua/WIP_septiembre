@@ -21,6 +21,7 @@ import tempfile
 
 import numpy as np
 import pandas as pd
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -148,7 +149,7 @@ def test_assembly_and_bands() -> None:
         results = run_to_assembly(configuration, list(range(1, 10)))
         detail, bands = results["forecast"]["forecast_detail"], results["forecast"]["forecast_bands"]
         fine = results["fine"]
-        future_rows = (fine["dataset_role"] == "projection").sum() + len(results["forecast"]["forecast_units_extended"])
+        future_rows = (fine["dataset_role"] == ROLE_PROJECTION).sum() + len(results["forecast"]["forecast_units_extended"])
         RECORDER.check(len(detail) == future_rows and detail["esperado_usd"].notna().all(), "every future row (known + simulated) has a forecast")
         RECORDER.check(np.allclose(detail["esperado_usd"], detail["total_tr_usd"] * detail["tasa"] * detail["uplift"]),
                        "esperado_usd = pipeline$ × tasa × uplift")

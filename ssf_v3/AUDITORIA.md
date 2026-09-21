@@ -17,10 +17,10 @@ revalorización) y vive en una **celda mandatory**. Cuatro claves, cuatro saltos
 series_card (1 fila por serie)  ──fs_key──▶  parent_ladder, support_chain, decision_support,
    │                                         fact_fu_gaps, key_bridge, forecast_detail,
    │                                         forecast_bands, fu_extended
-   ├──estimacion_key──▶  decision_dynamics (1 fila por id)  ──▶  decision_technique,
+   ├──estimacion_key──▶  pool_reference (1 fila por id)  ──▶  decision_technique,
    │                                                             decision_error_bands,
    │                                                             backtest_holdout, backtest_pred
-   ├──celda_key──▶  simpson_contrafactual, mix_shift
+   ├──celda_key──▶  mandatory_only_cost, mix_shift
    └──(vía key_bridge)──uplift_cell_key──▶  decision_uplift, uplift_chain
 ```
 
@@ -31,12 +31,12 @@ Tablas de dimensión (una fila por clave) y relaciones:
 | Dimensión | Clave | Hechos que filtra (1 → *) |
 |---|---|---|
 | `sff_series_card` | `fs_key` | `sff_parent_ladder`, `sff_support_chain`, `sff_decision_support`, `sff_fact_fu_gaps`, `sff_key_bridge`, `sff_forecast_detail`, `sff_forecast_bands`, `sff_fu_extended` |
-| `sff_decision_dynamics` | `estimacion_key` | `sff_decision_technique`, `sff_decision_error_bands`, `sff_backtest_holdout`, `sff_backtest_pred`, y **`sff_series_card`** (* → 1) |
+| `sff_pool_reference` | `estimacion_key` | `sff_decision_technique`, `sff_decision_error_bands`, `sff_backtest_holdout`, `sff_backtest_pred`, y **`sff_series_card`** (* → 1) |
 | `sff_decision_uplift` | `uplift_cell_key` | `sff_uplift_chain`, `sff_key_bridge`, `sff_forecast_detail` |
-| celda (tabla calculada `DISTINCT(sff_series_card[celda_key])` o `sff_risk_levels` no vale: crea `dim_celda`) | `celda_key` | `sff_simpson_contrafactual`, `sff_mix_shift`, `sff_series_card` |
+| celda (tabla calculada `DISTINCT(sff_series_card[celda_key])` o `sff_risk_levels` no vale: crea `dim_celda`) | `celda_key` | `sff_mandatory_only_cost`, `sff_mix_shift`, `sff_series_card` |
 
 Para que seleccionar una serie filtre las tablas del id de estimación y del uplift, las
-relaciones `series_card → decision_dynamics` y `key_bridge → decision_uplift` deben ser
+relaciones `series_card → pool_reference` y `key_bridge → decision_uplift` deben ser
 **bidireccionales** (o usar `CROSSFILTER` en las medidas). Es la única configuración que
 no es la de por defecto.
 
@@ -44,7 +44,7 @@ Página de auditoría recomendada (un slicer sobre `series_card[fs_id]`):
 1. Tarjeta: ruta, universo, signo, n_propio, meses, tasa_propia ± error, nivel de riesgo.
 2. Tabla `parent_ladder` ordenada por `peldano`, con `elegido` en negrita.
 3. Tarjeta: `id_estimacion`, `peldano`, `k`, `z`, `tasa_estimada`, `se_estimacion_pp`, `se_prediccion_pp`.
-4. `decision_dynamics` (una fila): φ, gate, perfil estacional, tendencia.
+4. `pool_reference` (una fila): φ, gate, perfil estacional, tendencia.
 5. `decision_technique` (una fila) + `decision_error_bands` (línea por h).
 6. `backtest_holdout`: gráfico real vs predicho por mes, con banda.
 7. `decision_uplift` de sus celdas.
@@ -74,7 +74,7 @@ si aquí se puede contar, allí se puede filtrar.
   (los peldaños anteriores no llegaban al suelo); `z` dice cuánto pesa la propia.
 - **¿Por qué esta técnica?** `decision_technique`: si es `retador`, ninguna técnica ganó
   a la media por el margen; si es `campeon`, `err_norm_medio` vs `retador_err_norm` es
-  cuánto gana, y `decision_dynamics` dice qué motor había (φ, estacional, tendencia).
+  cuánto gana, y `pool_reference` dice qué motor había (φ, estacional, tendencia).
 - **¿Por qué esta banda?** `decision_error_bands`: `propia` (medida en este id) o
   `familia` (prestada de la técnica); los cuantiles con signo dicen hacia dónde se
   equivoca; y en `forecast_bands` la banda de cada fila añade el muestreo de la propia

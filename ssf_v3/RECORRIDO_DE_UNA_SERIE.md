@@ -50,14 +50,14 @@ clientes no nuevos. 15 vencimientos al mes de media.
 
 **Paso 1 · Qué es y qué tiene (fase 0).** Tiene meses con historia (sabemos qué pasó) y
 meses futuros con contratos que vencen (hay algo que predecir): se marca como
-`trainable`. Si solo tuviera historia se marcaría `no_impact` (nada que predecir); si
-solo tuviera futuro, `heuristic` (nada de qué aprender).
+`predecible`. Si solo tuviera historia se marcaría `solo_historia` (nada que predecir); si
+solo tuviera futuro, `solo_futuro` (nada de qué aprender).
 
 **Paso 2 · Su serie mensual (fase 1.1).** 44 meses de historia. En 6 de ellos no venció
 nadie: esos meses se rellenan con una fila vacía cuya tasa es "desconocida", no 0 %
 (un mes sin vencimientos no dice nada de la tasa). Se calcula su tasa de toda la
 historia (por ejemplo 76 %), su error de Wilson (±20 puntos con n = 15) y su signo:
-`neutral`, porque ningún cliente lleva señal.
+`neutro`, porque ningún cliente lleva señal.
 
 **Paso 3 · Sus peldaños (fase 1.3).** Como es neutra: 0 (ella), 2 (con y sin clientes
 nuevos), 3 (su celda), 4 (celda sin distinguir banda de dispositivos), 5…
@@ -101,7 +101,7 @@ parte). Una serie de 15 clientes con ±20 puntos aporta muy poca banda al total.
 
 Ahora los 15 clientes tienen cancelación anunciada. Todo es igual hasta el signo.
 
-**Paso 2 · Signo.** `softcancel` es una señal negativa activa → signo `neg`. Este cliente
+**Paso 2 · Signo.** `softcancel` es una señal negativa activa → signo `negativo`. Este cliente
 renueva de forma muy distinta (en torno al 40 % frente al 78 % de los que no han
 avisado). La regla del sistema: **una serie con señal nunca toma prestada la tasa de
 series sin señal ni de series con la señal contraria.**
@@ -128,7 +128,7 @@ las dimensiones que casi no separan (bandas de dispositivos, producto fino).
 **Pasos 5 a 10.** Como en el caso A, con dos diferencias: el pool es el de las señales
 negativas, y si la serie es S, la banda es la binomial de sus propios 15 clientes.
 
-**Y si tuviera dos señales opuestas** (`softcancel = 1` y `autorenew = 1`): signo `mixed`.
+**Y si tuviera dos señales opuestas** (`softcancel = 1` y `autorenew = 1`): signo `mixto`.
 Solo peldaño 0, nivel **M**, se queda sola y se cuenta. No es un problema del forecast:
 son dos modelos marcando al mismo cliente en sentidos contrarios.
 

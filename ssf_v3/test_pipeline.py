@@ -29,6 +29,7 @@ sys.path.insert(0, PROJECT_FOLDER)
 
 from checks import CheckRecorder
 from config import PHYSICAL_TABLE_NAMES, Config
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 from pipeline import run_analysis, run_pipeline
 from synthetic_v3 import build_raw
 from test_fixtures import quiet
@@ -70,11 +71,11 @@ def test_analysis_taxonomy_1() -> dict:
     RECORDER.check(card.loc["EU|0|0|0|0|A|tele", "peldano"] == 2 and card.loc["EU|0|0|0|0|A|tele", "n_efectivo"] > 600,
                    "mute channel: EU|A tele (n=12) annuls channel and pools with EU|A web")
     negatives = card.loc[["EU|1|0|0|0|A|web", "EU|0|1|0|0|A|web", "EU|0|0|1|0|A|web"]]
-    RECORDER.check((negatives["id_estimacion"] == "EU|SIG=neg|A|web").all() and (negatives["n_efectivo"] > 30).all(),
-                   "sign grouping: the three small negatives (15/12/10) pool as 'EU|SIG=neg|A|web' ≥ 30")
+    RECORDER.check((negatives["id_estimacion"] == "EU|SIG=negativo|A|web").all() and (negatives["n_efectivo"] > 30).all(),
+                   "sign grouping: the three small negatives (15/12/10) pool as 'EU|SIG=negativo|A|web' ≥ 30")
     RECORDER.check(card.loc["EU|0|0|0|1|A|web", "nivel_riesgo"] == "S_signo_bajo_suelo", "the minority positive stays in its sign under the floor (S)")
     RECORDER.check(card.loc["EU|1|0|0|1|B|web", "nivel_riesgo"] == "M_signo_mixto", "the mixed-sign series is alone (M)")
-    RECORDER.check(card.loc["NA|0|0|0|0|A|tele", "peldano"] == 2 and card.loc["NA|0|0|0|0|A|tele", "id_estimacion"] == "NA|SIG=neutral|A|*",
+    RECORDER.check(card.loc["NA|0|0|0|0|A|tele", "peldano"] == 2 and card.loc["NA|0|0|0|0|A|tele", "id_estimacion"] == "NA|SIG=neutro|A|*",
                    "a neutral small series borrows from its cell's neutrals")
     RECORDER.check(card.loc["NA|0|0|0|0|B|tele", "huecos"] in (10, 11), "gaps: NA|B tele has ~11 synthetic months with undefined rate (2026-08 is pending, not history)")
     RECORDER.check(card.loc["NA|0|0|0|0|A|kiosk", "nivel_riesgo"] == "N_sin_impacto" and card.loc["EU|0|0|0|0|B|tienda", "nivel_riesgo"] == "D_sin_historia"
@@ -107,11 +108,16 @@ def test_analysis_taxonomy_1() -> dict:
     from config import hash_key
     with quiet():
         by_id = sheet("EU|0|0|0|0|A|tele", results=results, figure=False)
-        by_estimation = sheet(hash_key("EU|SIG=neg|A|web"), results=results, figure=False)
+        by_estimation = sheet(hash_key("EU|SIG=negativo|A|web"), results=results, figure=False)
     RECORDER.check(by_id["keys"]["kind"] == "fs_key" and "SERIES EU|0|0|0|0|A|tele" in by_id["summary"] and len(by_id["tables"]["parent_ladder"]) >= 3,
                    "sheet(fs_id): the series' tables and summary")
     RECORDER.check(by_estimation["keys"]["kind"] == "estimacion_key" and len(by_estimation["keys"]["members"]) == 4,
                    "sheet(estimacion_key): resolves the pool and lists its 4 member series")
+    movers = results["top_movers"]
+    RECORDER.check(set(movers["tipo"]) >= {"deterioro", "mejora", "senal_negativa", "banda_ancha", "precio"} and (movers.groupby("tipo")["rank"].min() == 1).all(),
+                   "top_movers has every kind, ranked by money inside each kind")
+    negative = movers[movers["tipo"] == "senal_negativa"]
+    RECORDER.check((negative["delta_pp"] > 0).all(), "negative-signal series renew below the neutral rate of their cell (recoverable money is positive)")
     validation = results["validation"]
     RECORDER.check(not ((validation["estado"] == "FAIL") & validation["familia"].isin(["INTEGRITY", "DOCTRINE"])).any(),
                    "the validation panel has no INTEGRITY / DOCTRINE failure")
@@ -146,12 +152,51 @@ def test_analysis_taxonomy_2() -> None:
     with quiet():
         results = run_analysis(configuration)
     card = results["series_card"].set_index("fs_id")
-    RECORDER.check(card.loc["EU|A|0|0|0|0|tele", "id_estimacion"] == "EU|A|SIG=neutral|*", "with product mandatory the tele series pools inside the EU|A cell")
-    RECORDER.check(card.loc["EU|A|0|1|0|0|web", "id_estimacion"] == "EU|A|SIG=neg|web", "sign grouping still happens inside the finer cell")
+    RECORDER.check(card.loc["EU|A|0|0|0|0|tele", "id_estimacion"] == "EU|A|SIG=neutro|*", "with product mandatory the tele series pools inside the EU|A cell")
+    RECORDER.check(card.loc["EU|A|0|1|0|0|web", "id_estimacion"] == "EU|A|SIG=negativo|web", "sign grouping still happens inside the finer cell")
     total_1 = 548_000
     total_2 = results["forecast"]["forecast_detail"]["esperado_usd"].sum()
     RECORDER.check(0.8 * total_1 < total_2 < 1.2 * total_1, f"the total stays in the same range (${total_2:,.0f})")
     RECORDER.check(not ((results["validation"]["estado"] == "FAIL")).any(), "validation passes on the second taxonomy")
+
+
+def test_signal_maturation() -> None:
+    """A raw whose future months carry FEWER signals than its closed months: the maturation
+    step must price the pending migration downwards and raise the level alert where the
+    photo is already above the final share."""
+    RECORDER.start_block("D · signal maturation (future photo below the final composition)")
+    base = build_raw(7)
+    future = base["period"] >= "2026-09"
+    immature = base.copy()
+    immature.loc[future & (immature["region"] == "EU"), "softcancel"] = 0          # EU: nobody has announced yet
+    immature.loc[future & (immature["region"] == "NA") & (immature["product"] == "A"), "dormant"] = 1   # NA·A: already everyone dormant
+    measures = [c for c in immature.columns if c.startswith("total_")]
+    keys = [c for c in immature.columns if c not in measures]
+    immature = immature.groupby(keys, as_index=False, dropna=False)[measures].sum()     # rows that became identical merge
+
+    class Immature(Config):
+        def read_raw(self):
+            return immature
+    with tempfile.TemporaryDirectory() as folder:
+        configuration = Immature(sql_engine=None, sql_schema=None, outdir=folder, business_mandatory_dims=["region"],
+                                 structural_timevarying_dims=TIMEVARYING, extra_renovacion=["product", "channel"],
+                                 extra_revalorizacion=["discount", "newcust"], extended_horizon_end="2027-12",
+                                 benchmark_group_dims=["region", "product"], benchmark_min_support=100, sheets_top_series=0,
+                                 console_explanations=False)
+        with quiet():
+            results = run_analysis(configuration)
+    adjustment = results["signal_maturation"]["signal_adjustment"]
+    eu_soft = adjustment[(adjustment["celda_comp"].str.startswith("EU")) & (adjustment["senal"] == "softcancel") & (adjustment["h"] > 1)
+                         & (adjustment["share_final_esperado"] > 0)]                       # cells where softcancel existed in the closed months
+    RECORDER.check(len(eu_soft) > 0 and (eu_soft["pendiente"] > 0).all() and (eu_soft["ajuste_usd"].fillna(0) <= 0).all(),
+                   "EU cells that used to have softcancel, now with none announced: pending maturation > 0 and a negative adjustment beyond h=1")
+    RECORDER.check((adjustment[adjustment["h"] <= 1]["pendiente"] == 0).all(), "at h ≤ 1 nothing is pending (what was going to appear has appeared)")
+    alerts = results["signal_maturation"]["signal_alerts"]
+    na_dormant = alerts[(alerts["celda_comp"].str.startswith("NA")) & (alerts["senal"] == "dormant") & (alerts["tipo"] == "nivel_anomalo")]
+    RECORDER.check(len(na_dormant) > 0, "NA·A already fully dormant: the level alert fires (share today far above the final share)")
+    answers = results["forecast"]["business_summary"]
+    RECORDER.check((answers["forecast_ajustado_usd"] <= answers["forecast_usd"] + 1e-6).all() and (answers["ajuste_senales_usd"] < 0).any(),
+                   "business_summary carries forecast_ajustado_usd below the photo forecast")
 
 
 def main() -> int:
@@ -159,6 +204,7 @@ def main() -> int:
     context = test_analysis_taxonomy_1()
     test_monthly_run(context)
     test_analysis_taxonomy_2()
+    test_signal_maturation()
     return RECORDER.print_panel("PIPELINE TEST")
 
 

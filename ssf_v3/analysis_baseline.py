@@ -24,11 +24,9 @@ import numpy as np
 import pandas as pd
 
 from config import Config, join_columns
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-PROJECTION_ROLE = "projection"
-PENDING_ROLE = "pending_close"
-TRUTH_ROLES = ("train", "test")
 GRAIN_GLOBAL = "global"
 WINDOWS_MONTHS = (1, 3, 12)
 HOLDOUT_LAGS = (1, 4)
@@ -115,7 +113,7 @@ def run_baseline(fine_table: pd.DataFrame, forecast_units_extended: pd.DataFrame
     (both carry the dimensions). Persists baseline_forecast and baseline_summary."""
     period, role = configuration.period_col, configuration.dataset_role_col
     grains = list(configuration.baseline_grains)
-    known_future = fine_table[fine_table[role].isin((PROJECTION_ROLE, PENDING_ROLE))]
+    known_future = fine_table[fine_table[role].isin((ROLE_PROJECTION, ROLE_PENDING))]
     future = pd.concat([known_future, forecast_units_extended], ignore_index=True) if forecast_units_extended is not None and len(forecast_units_extended) else known_future.copy()
     future[period] = pd.PeriodIndex(future[period].astype(str), freq="M")
     if future.empty or business_summary is None or business_summary.empty:

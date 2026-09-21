@@ -17,12 +17,12 @@ Filas, meses, roles después de la doctrina del mes en curso, dinero de pipeline
 filas que traían resultados en proyección (deberían ser solo las del mes en curso).
 Compartir: las líneas `[0.1]`/`[0.2]`/`[0.3]`.
 
-**P0.2 · Rutas y universos** — `fu_summary` (`forecast_units_raw_summary`).
+**P0.2 · Rutas y universos** — `fact_fu` (columnas se_pp_max / moe_pp_max / moe_usd_max) (`forecast_units_raw_summary`).
 ```sql
 SELECT ruta, universo, COUNT(*) series, SUM(usd_proyectado) usd FROM sff_fu_summary GROUP BY 1,2
 ```
-Qué mirar: cuánto dinero va por `heuristic` (series solo en proyección) y por
-`time_series` (universo reservado). Si es > 5 % del total, hay que hablar de ellos.
+Qué mirar: cuánto dinero va por `solo_futuro` (series solo en proyección) y por
+`serie_temporal` (universo reservado). Si es > 5 % del total, hay que hablar de ellos.
 
 **P0.3 · Perfil del raw (nivel 0)** — `raw_profile` y `dim_domains`.
 ```sql
@@ -199,6 +199,19 @@ FROM sff_horizon_report_total ORDER BY period
 ```
 Qué mirar: el total mensual con su banda asimétrica; desde qué mes el pipeline es simulado
 (`pct_simulado`) y con qué factor de adquisición (consola `[5]`). Compartir: la tabla entera.
+
+**P5.0b ★ Maduración de las señales** — `signal_adjustment`, `signal_alerts` (consola `[5] SIGNAL MATURATION`).
+```sql
+SELECT celda_comp, period, h, senal, share_actual, share_final_esperado, pendiente, unidades_migran, ajuste_usd FROM sff_signal_adjustment ORDER BY ajuste_usd
+SELECT * FROM sff_signal_alerts ORDER BY z DESC
+```
+Qué mirar: cuánto dinero falta por perder porque las señales aún no han aparecido (por celda y mes), y qué meses o señales ya van peor de lo habitual. `forecast_ajustado_usd` en `business_summary`.
+
+**P5.1a ★★ Top movers** — `top_movers` (consola `[5] TOP MOVERS`).
+```sql
+SELECT tipo, rank, fs_id, region, delta_pp, usd_impacto, pipeline_12m_usd FROM sff_top_movers WHERE rank <= 10 ORDER BY tipo, rank
+```
+Qué mirar: por tipo, las diez series (o celdas) con más dinero en juego: dónde la tasa prevista cae respecto a la realizada (deterioro), dónde sube (mejora), cuánto dinero disputan las señales negativas, dónde la banda es más ancha, qué pools fallamos sistemáticamente en el examen y qué celdas están lejos de la revalorización media. Es la lista de acciones.
 
 **P5.1b ★ Por región** — `forecast_by_region`.
 ```sql

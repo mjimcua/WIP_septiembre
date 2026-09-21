@@ -21,6 +21,7 @@ import tempfile
 
 import numpy as np
 import pandas as pd
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # make the flat project folder importable before the sibling imports below
 PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -63,9 +64,9 @@ def test_rate_series() -> None:
                        "a missing month inside the history becomes a synthetic row")
         RECORDER.check(np.isnan(s1.loc[pd.Period("2024-06", "M"), "tasa"]),
                        "the synthetic row's rate is NaN (a month with no expirations says nothing)")
-        RECORDER.check(s1[s1["dataset_role"] == "projection"]["tasa"].isna().all(),
+        RECORDER.check(s1[s1["dataset_role"] == ROLE_PROJECTION]["tasa"].isna().all(),
                        "projection rows have no rate")
-        real = s1[(s1["sintetica"] == 0) & (s1["dataset_role"] != "projection")]
+        real = s1[(s1["sintetica"] == 0) & (s1["dataset_role"] != ROLE_PROJECTION)]
         RECORDER.check(np.allclose(real["tasa"], real["total_renewed_units"] / real["total_tr_units"]),
                        "real history rows: tasa = renewed / pipeline")
         row = summary.set_index("fs_id").loc["EU|0|0|web"]
@@ -76,8 +77,8 @@ def test_rate_series() -> None:
         RECORDER.check(4.0 < row["error_binomial_pp"] < 5.5,
                        f"error_binomial_pp at n=200, p≈.8 is ≈ ±4.7 pp (found {row['error_binomial_pp']:.2f})")
         signs = summary.set_index("fs_id")["signo"]
-        RECORDER.check(signs["EU|0|0|web"] == "neutral" and signs["EU|1|0|web"] == "neg"
-                       and signs["EU|0|1|web"] == "pos" and signs["EU|1|1|web"] == "mixed",
+        RECORDER.check(signs["EU|0|0|web"] == SIGN_NEUTRAL and signs["EU|1|0|web"] == SIGN_NEGATIVE
+                       and signs["EU|0|1|web"] == SIGN_POSITIVE and signs["EU|1|1|web"] == SIGN_MIXED,
                        "sign per series: neutral / neg / pos / mixed")
         RECORDER.check(abs(row["usd_proyectado"] - 3 * 200 * 20) < 1e-9,
                        "usd_proyectado = the series' projected pipeline dollars (3 months × 200 × $20)")
@@ -166,7 +167,7 @@ def test_timevarying_calibration() -> None:
         soft = calibration[(calibration["tipo"] == "flag") & (calibration["nombre"] == "softcancel")]
         RECORDER.check(len(soft) == 24 and 0.25 < soft["tasa_realizada"].mean() < 0.5,
                        "softcancel flag: 24 months, realized rate ≈ .35-.45 (S3, S4 and the mixed S6)")
-        neg = calibration[(calibration["tipo"] == "signo") & (calibration["nombre"] == "neg")]
+        neg = calibration[(calibration["tipo"] == "signo") & (calibration["nombre"] == SIGN_NEGATIVE)]
         RECORDER.check(len(neg) == 24 and abs(neg["tasa_realizada"].mean() - 0.35) < 0.06,
                        "sign neg: only S3 and S4 (the mixed series is NOT counted as neg): ≈ .35")
 
@@ -176,22 +177,22 @@ def test_build_relatives() -> None:
     with tempfile.TemporaryDirectory() as folder:
         configuration = ladder_config(folder)
     values = dict(region="EU", softcancel=1, autorenew=0, channel="web")
-    signed = build_relatives(values, "neg", configuration, "channel", ["region"])
-    RECORDER.check([r[2] for r in signed] == ["EU|1|0|web", "EU|SIG=neg|web", "EU|SIG=neg|*", "EU|SIG=neg|*"],
+    signed = build_relatives(values, SIGN_NEGATIVE, configuration, "channel", ["region"])
+    RECORDER.check([r[2] for r in signed] == ["EU|1|0|web", "EU|SIG=negativo|web", "EU|SIG=negativo|*", "EU|SIG=negativo|*"],
                    "signed series: itself → same sign → extra annulled → cell × sign; STOP (no mandatory collapse)")
-    neutral = build_relatives(dict(region="EU", softcancel=0, autorenew=0, channel="web"), "neutral", configuration, "channel", ["region"])
-    RECORDER.check([r[2] for r in neutral] == ["EU|0|0|web", "EU|SIG=neutral|*", "EU|SIG=neutral|*", "*|SIG=neutral|*"],
+    neutral = build_relatives(dict(region="EU", softcancel=0, autorenew=0, channel="web"), SIGN_NEUTRAL, configuration, "channel", ["region"])
+    RECORDER.check([r[2] for r in neutral] == ["EU|0|0|web", "EU|SIG=neutro|*", "EU|SIG=neutro|*", "*|SIG=neutro|*"],
                    "neutral series: itself → extra annulled → cell (neutrals) → mandatory collapsed (neutrals)")
-    RECORDER.check(all("SIG=neutral" in r[2] for r in neutral[1:]), "a neutral series never loses its 'neutral' sign")
+    RECORDER.check(all("SIG=neutro" in r[2] for r in neutral[1:]), "a neutral series never loses its 'neutral' sign")
     # with a loss cap, a signed series may collapse the mandatory dims that separate little, sign kept
     with tempfile.TemporaryDirectory() as folder:
         permissive = ladder_config(folder, signed_ladder_max_loss=0.05)
-    climbing = build_relatives(values, "neg", permissive, "channel", ["region"], collapse_loss={"region": 0.02})
-    RECORDER.check([r[2] for r in climbing][-1] == "*|SIG=neg|*" and "sign kept" in climbing[-1][1],
+    climbing = build_relatives(values, SIGN_NEGATIVE, permissive, "channel", ["region"], collapse_loss={"region": 0.02})
+    RECORDER.check([r[2] for r in climbing][-1] == "*|SIG=negativo|*" and "sign kept" in climbing[-1][1],
                    "signed_ladder_max_loss=0.05: 'region' (loses 0.02) collapses with the sign kept")
-    stopped = build_relatives(values, "neg", permissive, "channel", ["region"], collapse_loss={"region": 0.30})
-    RECORDER.check([r[2] for r in stopped][-1] == "EU|SIG=neg|*", "…but not when the loss (0.30) exceeds the cap")
-    mixed = build_relatives(dict(region="EU", softcancel=1, autorenew=1, channel="web"), "mixed", configuration, "channel", ["region"])
+    stopped = build_relatives(values, SIGN_NEGATIVE, permissive, "channel", ["region"], collapse_loss={"region": 0.30})
+    RECORDER.check([r[2] for r in stopped][-1] == "EU|SIG=negativo|*", "…but not when the loss (0.30) exceeds the cap")
+    mixed = build_relatives(dict(region="EU", softcancel=1, autorenew=1, channel="web"), SIGN_MIXED, configuration, "channel", ["region"])
     RECORDER.check(len(mixed) == 1 and mixed[0][2] == "EU|1|1|web", "a mixed-sign series has no relative but itself")
 
 
@@ -203,18 +204,18 @@ def test_climb_and_estimate() -> None:
         card = results["card"].set_index("fs_id")
         RECORDER.check(card.loc["EU|0|0|web", "peldano"] == 0 and card.loc["EU|0|0|web", "nivel_riesgo"] == "A_propio",
                        "S1 (n=200): its own rate, level A")
-        RECORDER.check(card.loc["EU|0|0|tele", "peldano"] == 2 and card.loc["EU|0|0|tele", "id_estimacion"] == "EU|SIG=neutral|*"
+        RECORDER.check(card.loc["EU|0|0|tele", "peldano"] == 2 and card.loc["EU|0|0|tele", "id_estimacion"] == "EU|SIG=neutro|*"
                        and abs(card.loc["EU|0|0|tele", "n_efectivo"] - 210) < 1,
                        "S2 (n=10): channel annulled, pools WITH the big sibling S1 → n=210")
         s3_rung1 = results["ladder"][(results["ladder"]["fs_id"] == "EU|1|0|web") & (results["ladder"]["peldano"] == 1)].iloc[0]
-        RECORDER.check(s3_rung1["padre_id"] == "EU|SIG=neg|web" and s3_rung1["n_padre"] == 12 and s3_rung1["elegido"] == 0,
-                       "S3 (soft=1 web, n=12): rung 1 'EU|SIG=neg|web' is only itself (12 < 30) → not chosen, climbs")
-        RECORDER.check(card.loc["EU|1|0|web", "peldano"] == 2 and card.loc["EU|1|0|web", "id_estimacion"] == "EU|SIG=neg|*",
-                       "S3 reaches rung 2 'EU|SIG=neg|*' (channel annulled, sign kept)")
-        RECORDER.check(card.loc["EU|1|0|tele", "id_estimacion"] == "EU|SIG=neg|*" and abs(card.loc["EU|1|0|tele", "n_efectivo"] - 32) < 1,
-                       "S4 reaches rung 2 'EU|SIG=neg|*' = S3 + S4 = 32 ≥ 30 (never the neutral cell)")
+        RECORDER.check(s3_rung1["padre_id"] == "EU|SIG=negativo|web" and s3_rung1["n_padre"] == 12 and s3_rung1["elegido"] == 0,
+                       "S3 (soft=1 web, n=12): rung 1 'EU|SIG=negativo|web' is only itself (12 < 30) → not chosen, climbs")
+        RECORDER.check(card.loc["EU|1|0|web", "peldano"] == 2 and card.loc["EU|1|0|web", "id_estimacion"] == "EU|SIG=negativo|*",
+                       "S3 reaches rung 2 'EU|SIG=negativo|*' (channel annulled, sign kept)")
+        RECORDER.check(card.loc["EU|1|0|tele", "id_estimacion"] == "EU|SIG=negativo|*" and abs(card.loc["EU|1|0|tele", "n_efectivo"] - 32) < 1,
+                       "S4 reaches rung 2 'EU|SIG=negativo|*' = S3 + S4 = 32 ≥ 30 (never the neutral cell)")
         RECORDER.check(card.loc["EU|0|1|web", "nivel_riesgo"] == "S_signo_bajo_suelo" and card.loc["EU|0|1|web", "z"] == 1.0
-                       and card.loc["EU|0|1|web", "id_estimacion"].startswith("EU|SIG=pos"),
+                       and card.loc["EU|0|1|web", "id_estimacion"].startswith("EU|SIG=positivo"),
                        "S5 (autorenew, n=6): top of its sign ladder still < 30 → S level, no blend, stays in its sign")
         RECORDER.check(card.loc["EU|1|1|web", "nivel_riesgo"] == "M_signo_mixto" and card.loc["EU|1|1|web", "peldano"] == 0,
                        "S6 (mixed sign): alone, level M")
@@ -229,9 +230,9 @@ def test_climb_and_estimate() -> None:
                        "S2 keeps a prediction error > 10 pp: n=10 stays noisy even with a good estimate")
         ladder = results["ladder"]
         RECORDER.check((ladder.groupby("fs_id")["elegido"].sum() == 1).all(), "exactly one chosen rung per series")
-        signed = results["decision"][results["decision"]["signo"].isin(["neg", "pos"])]
+        signed = results["decision"][results["decision"]["signo"].isin([SIGN_NEGATIVE, SIGN_POSITIVE])]
         RECORDER.check((signed["peldano"] <= 3).all(), "no signed series climbs above its cell")
-        report = run_support_ladder.risk_levels_report(results["card"], "test")
+        report = run_support_ladder.risk_levels_report(results["card"], ROLE_TEST)
         RECORDER.check(abs(report["pct_usd"].sum() - 100) < 1e-6, "the money report sums to 100 %")
         RECORDER.check(set(report["nivel_riesgo"]) >= {"A_propio", "B_prestado", "S_signo_bajo_suelo", "M_signo_mixto"},
                        "the report shows levels A, B, S and M")
@@ -244,7 +245,7 @@ def test_own_rate_floor() -> None:
         results = run_to_ladder(configuration)
         card = results["card"].set_index("fs_id")
         s1 = card.loc["EU|0|0|web"]
-        RECORDER.check(s1["peldano"] == 2 and s1["id_estimacion"] == "EU|SIG=neutral|*" and 0 < s1["z"] < 1,
+        RECORDER.check(s1["peldano"] == 2 and s1["id_estimacion"] == "EU|SIG=neutro|*" and 0 < s1["z"] < 1,
                        "S1 (n=200 < 271): climbs to its first relative with support and BLENDS (z between 0 and 1)")
         RECORDER.check(s1["nivel_riesgo"] == "A3_propio_reforzado", "S1 is level A3: own evidence, reinforced")
         RECORDER.check(abs(s1["z"] - 200 / (200 + s1["k"])) < 1e-3, "z = n/(n+k) with the series' own n")

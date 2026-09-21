@@ -132,6 +132,13 @@ PHYSICAL_TABLE_NAMES = {
     "pipeline_summary": "pipeline_summary",
     "business_summary": "business_summary",
     "forecast_by_region": "forecast_by_region",
+    "top_movers": "top_movers",
+    "signal_composition": "signal_composition",
+    "signal_snapshot": "signal_snapshot",
+    "signal_final_composition": "signal_final_comp",
+    "signal_adjustment": "signal_adjustment",
+    "signal_alerts": "signal_alerts",
+    "metric_legend": "metric_legend",
     "baseline_forecast": "baseline_forecast",
     "baseline_summary": "baseline_summary",
     "validation_report": "validation_report",
@@ -172,6 +179,26 @@ def join_columns(frame: pd.DataFrame, columns: list) -> pd.Series:
 
     # [3] back to a Series that carries the caller's index
     return pd.Series(joined_ids, index=frame.index)
+
+
+# What each table is FOR: "producto" (the report and the business read it), "bi" (Power BI
+# dimensions and facts); everything else is "intermedia" (decisions and traces the
+# framework reads back). The report lists the producto tables; Power BI binds the bi ones.
+TABLE_KIND = {
+    "producto": ["pipeline_summary", "business_summary", "forecast_by_region", "forecast_by_level", "horizon_report_total",
+                 "top_movers", "risk_levels_report", "decision_estacionalidad", "baseline_summary", "signal_adjustment",
+                 "signal_alerts", "validation_report", "dial_buckets"],
+    "bi": ["forecast_units", "fine_table", "lookup_forecast_units", "lookup_combinations", "key_bridge", "forecast_detail",
+           "forecast_bands", "series_card", "forecast_units_extended", "signal_snapshot", "mix_shift_decomposition"],
+}
+
+
+def table_kind(logical_name: str) -> str:
+    """'producto', 'bi' or 'intermedia' for a logical table name."""
+    for kind, names in TABLE_KIND.items():
+        if logical_name in names:
+            return kind
+    return "intermedia"
 
 
 def explain(configuration, *lines: str) -> None:
@@ -325,11 +352,6 @@ class Config:
     test_months: int = 6
 
     # ─── phase 1.1 · rate series ───────────────────────────────────────────────────
-    # A missing month means "no contracts were due": the rate is undefined (0/0), NOT 0 %.
-    # "no_rate" is the only implemented policy (the synthetic gap row keeps the series
-    # continuous but its rate is NaN, so no technique ever sees a false 0 % month). The
-    # field exists so the decision is visible, not so it can be flipped.
-    gap_rate_policy: str = "no_rate"
 
     # ─── phase 1.2 · dimension separation and mix-shift (ANALYSIS) ─────────────────
     # Months with truth judged by the walk-forward valuation of the mandatory-only view
@@ -553,6 +575,12 @@ class Config:
     # total is flagged in horizon_report_total.banda_monotona. Per id the band never
     # narrows (by construction); this is a mix signal, not a calibration one.
     band_narrowing_tolerance_pct: float = 1.0
+
+    # ─── phase 5.9 · maturation of the signals (RUN) ────────────────────────────────
+    # The final composition of a cell (neutral / softcancel / dormant…) is measured over
+    # the last N closed months; the pending maturation of a future month is that final
+    # share minus today's share. 12 = a full year of expiries.
+    signal_final_window_months: int = 12
 
     # ─── sheets drawn at the end of every analysis ─────────────────────────────────
     # After the forecast, the sheet (six-panel figure + story) of the N series with the
@@ -1038,8 +1066,12 @@ class Config:
                 stamped[key_column] = stamped[id_column].astype(str).map(hash_key)
         return stamped
 
-    def write(self, frame: pd.DataFrame, logical_table_name: str) -> pd.DataFrame:
+    def write(self, frame: pd.DataFrame, logical_table_name: str, append: bool = False) -> pd.DataFrame:
         """Persist one star-schema table with automatic traceability.
+
+        `append=True` ADDS the rows to the existing table instead of replacing it: the
+        monthly photos (`signal_snapshot`) accumulate across runs; every row carries
+        its process_date and execution_id, so a photo can be told from the next.
 
         INPUT:   frame — the table as produced by a phase · logical_table_name — the
                  LOGICAL name (PHYSICAL_TABLE_NAMES maps it to the physical one).
@@ -1071,10 +1103,21 @@ class Config:
 
         # [4] SQL when there is an engine, CSV otherwise
         write_start_time = time.time()
-        if self.engine is not None:
+        if self.engine is not None and append:
+            sanitized_frame.to_sql(physical_table_name, self.engine, schema=self.sql_schema, if_exists="append", index=False,
+                                   chunksize=self.sql_chunksize, dtype=self._nvarchar_dtypes(sanitized_frame))
+            destination = self._qualified_table_name(physical_table_name)
+            mode_label = "SQL append"
+        elif self.engine is not None:
             effective_write_mode = self._write_to_sql(sanitized_frame, physical_table_name)
             destination = self._qualified_table_name(physical_table_name)
             mode_label = "truncate" if effective_write_mode == "truncate" else f"SQL {effective_write_mode}"
+        elif append:
+            csv_path = os.path.join(self.outdir, f"{physical_table_name}.csv")
+            os.makedirs(self.outdir, exist_ok=True)
+            sanitized_frame.to_csv(csv_path, index=False, mode="a", header=not os.path.exists(csv_path))
+            destination = csv_path
+            mode_label = "CSV append"
         else:
             csv_path = os.path.join(self.outdir, f"{physical_table_name}.csv")
             sanitized_frame.to_csv(csv_path, index=False)

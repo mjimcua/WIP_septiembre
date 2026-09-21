@@ -30,10 +30,10 @@ import numpy as np
 import pandas as pd
 
 from config import Config, explain, join_columns
+from vocabulario import *  # the persisted labels (roles, signs, treatments, origins, levels)
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-NEUTRAL_SIGN = "neutral"
-TRUTH_ROLES = ("train", "test")
+NEUTRAL_SIGN = SIGN_NEUTRAL
 TOP_N_PER_GROUP = 5
 MIN_MONTHLY_SUPPORT = 271.0          # the dial at ±5 pp (90 %, p = 0.5)
 MIN_HISTORY_MONTHS = 36
@@ -79,7 +79,7 @@ def select_benchmark_series(series_card: pd.DataFrame, units: pd.DataFrame, conf
     dims = group_dims or configuration.business_mandatory_dims[:2]
 
     # [1] candidates
-    candidates = series_card[(series_card["signo"] == NEUTRAL_SIGN) & (series_card["ruta"] == "trainable")
+    candidates = series_card[(series_card["signo"] == NEUTRAL_SIGN) & (series_card["ruta"] == TREATMENT_PREDICTABLE)
                              & (series_card["meses_historia"] >= short_months)].copy()
 
     # [2] monthly support over the closed months: median and minimum per series
@@ -450,7 +450,7 @@ def run_seasonality_benchmark(series_card: pd.DataFrame, units: pd.DataFrame, fi
     selected = select_benchmark_series(series_card, units, configuration, configuration.benchmark_group_dims or None,
                                        configuration.benchmark_top_n, configuration.benchmark_min_support,
                                        configuration.benchmark_min_months, configuration.benchmark_short_months)
-    future = fine_table[fine_table[role].isin(("projection", "pending_close"))].copy()
+    future = fine_table[fine_table[role].isin((ROLE_PROJECTION, ROLE_PENDING))].copy()
     future["fs_id"] = join_columns(future, configuration.rate_series_columns)
     rows, panels = [], []
     for _, series in selected.iterrows():
@@ -482,9 +482,9 @@ def benchmark_summary(decision: pd.DataFrame, flags: pd.DataFrame, selected: pd.
     pct_seasonal = 100 * seasonal["usd_proyectado"].sum() / money if money else 0.0
     pct_trending = 100 * trending["usd_proyectado"].sum() / money if money else 0.0
     seasonal_flags = flags[(flags["consistencia"] >= configuration.benchmark_consistency) & (flags["z_medio"].abs() >= 1.0) & (flags["anios"] >= 2)] if len(flags) else flags
-    verdict = ("NO material seasonality in the rate: the rate branch keeps level techniques only"
+    verdict = ("sin estacionalidad material en la tasa: la tasa se predice desde su nivel"
                if pct_seasonal < configuration.benchmark_material_share_pct
-               else f"seasonality in {len(seasonal)} series ({pct_seasonal:.0f}% of the sample's money): month effects in THOSE series only")
+               else f"estacionalidad en {len(seasonal)} series ({pct_seasonal:.0f} % del dinero de la muestra): efectos de mes solo en esas series")
     print("[2] SEASONALITY BENCHMARK · big neutral series, fully segmented (behaviour, not composition)")
     print(f"   sample: {len(decision)} series · {coverage}% of the projected pipeline · thresholds: amplitude ≥ {configuration.benchmark_amplitude_pp} pp, "
           f"consistency ≥ {configuration.benchmark_consistency:.0%}, shape must improve the recent level ≥ {configuration.benchmark_improvement_pct:.0f}% at h=6 and not worsen it at h=1")

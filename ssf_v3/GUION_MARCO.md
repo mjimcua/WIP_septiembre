@@ -31,7 +31,7 @@ del error que vamos a tener. Con él describimos la pipeline (cuánto dinero est
 unidades de 5, de 50, de 500 clientes: el dial 30 / 271 / 752), el riesgo de cada
 predicción, y decidimos dónde hace falta ayuda.
 
-*Código*: `binomial_reference.py`, `fu_summary`, `dial_buckets`, `fu_profile` (fases 0 y 1.1).
+*Código*: `binomial_reference.py`, `fact_fu` (columnas se_pp_max / moe_pp_max / moe_usd_max), `dial_buckets`, `fu_profile` (fases 0 y 1.1).
 
 ## 4 · Segmentar para ganar homogeneidad, agrupar para recuperar soporte
 
@@ -94,6 +94,21 @@ la de cada pool y la de la cartera entera (los pools que se equivocan juntos).
 
 *Código*: `analysis_backtest.py` (fase 3). Salida: `decision_technique`, bandas, hold-out.
 
+## 8b · Las señales maduran: la foto de hoy no es la del vencimiento
+
+`softcancel` aparece justo después de una renovación y otra vez cerca del vencimiento;
+`dormant` aparece en cualquier momento y solo crece. Un mes lejano tiene hoy menos
+señales de las que tendrá al vencer, y las series con señal renuevan mucho peor. Se
+compara la composición de cada celda (neutros / cada señal) en los meses cerrados —la
+final— con la foto de los meses futuros; lo que falta por aparecer se valora en dólares
+y se presenta como forecast ajustado, junto a la foto. Cada run guarda la foto: con
+meses suficientes, la curva de maduración por distancia se mide y sustituye a la
+aproximación. Y dos alertas: meses que ya van por encima de su proporción final, y
+señales cuya proporción final crece mes a mes.
+
+*Código*: `analysis_signal_maturation.py` (fase 5.9). Salida: `signal_adjustment`,
+`signal_alerts`, `forecast_ajustado_usd`.
+
 ## 9 · La revalorización y el ensamblaje
 
 El uplift por celda (descuento, cliente nuevo, precio reciente) multiplica. Cada fila
@@ -115,8 +130,8 @@ ensamblaje y respuestas · validación.
 - Sin diagnósticos individuales de dinámica por pool (φ, perfil, tendencia, cambio de
   nivel, estación del volumen): la estacionalidad es una decisión del benchmark, no de
   cada serie.
-- Sin técnicas que encuentren estación por su cuenta: 7 técnicas de nivel + una con
-  efecto de mes donde el benchmark lo declaró.
+- Sin técnicas que encuentren estación por su cuenta: nivel, Theta y Holt amortiguado siempre;
+  las dos estacionales (T15, Holt-Winters) solo donde el benchmark lo declaró.
 - Sin búsqueda de casos de Simpson: la composición se cuenta (Kitagawa) y se valora en
   dólares (coste de la vista solo-mandatory).
 - El calendario se decide desde el mes en curso; el mes anterior no está cerrado.
