@@ -139,6 +139,12 @@ PHYSICAL_TABLE_NAMES = {
     "signal_adjustment": "signal_adjustment",
     "signal_alerts": "signal_alerts",
     "metric_legend": "metric_legend",
+    "discount_churn_by_bucket": "discount_churn_bucket",
+    "discount_churn_by_state": "discount_churn_state",
+    "discount_churn_adjusted": "discount_churn_adjusted",
+    "discount_churn_importance": "discount_churn_importance",
+    "discount_churn_price": "discount_churn_price",
+    "uplift_contract_check": "uplift_contract_check",
     "baseline_forecast": "baseline_forecast",
     "baseline_summary": "baseline_summary",
     "validation_report": "validation_report",
@@ -399,6 +405,36 @@ class Config:
     # product_1), i.e. cohorts nearly identical — pooled signal, not mixed cohorts. With 10
     # mandatory dims the strict rule left 4,237 signed series ($8.3M) without a pool.
     signed_ladder_max_loss: float = 0.05
+
+    # ─── phase 4 · the contract path of the uplift ─────────────────────────────────
+    # Where the customer's CURRENT discount is known, the renewal price is not estimated:
+    # the contract fixes it. `discount_value_column` names the raw column with the exact
+    # discount in tanto por 1 (0.30 = 30 %); 0 = list price, null = unknown (never read as 0).
+    # It is a formula input, not a cell dimension: it rides along every raw row (nulls
+    # allowed), it is not part of any id, and it does not cut the support. The row's
+    # uplift = price_increase(period) / (1 − discount) × realization ratio of its cell;
+    # rows with an unknown discount (or one above `discount_cap`, near-free licences) take
+    # the statistical uplift of their cell as before. None = every row is statistical.
+    discount_value_column: Optional[str] = None
+    # Multiplicative list-price increases by period ({"2027-01": 1.05}); the factor of a
+    # month is the product of every increase dated at or before it. Empty = no increase.
+    price_increase_by_period: dict = field(default_factory=dict)
+    # Discounts above this are treated as unknown (1/(1−d) explodes for near-free licences).
+    discount_cap: float = 0.9
+    # The realization ratio (observed uplift / rule uplift, dollar-weighted, per uplift cell)
+    # corrects the rule where renewal offers make customers renew below list. Applied only
+    # where the cell has ≥ uplift_floor renewers with a known discount; else 1.0.
+    contract_apply_realization_ratio: bool = True
+    # Estimate the statistical uplift only with rows whose discount is unknown (pending
+    # confirmation: if the missing discount is not random, mixing both populations biases it).
+    statistical_uplift_from_unknown_only: bool = False
+
+    # ─── phase 1.5 · discount and churn (ANALYSIS) ─────────────────────────────────
+    # The column with the discount bucket (None = the first extra de revalorización whose
+    # name contains "disc") and the value that means "no discount" (None = the first
+    # bucket in sorted order). The analysis compares every bucket to that reference.
+    discount_column: Optional[str] = None
+    no_discount_value: Optional[str] = None
 
     # ─── phase 2 · the seasonality benchmark (ANALYSIS) ────────────────────────────
     # Months of history the TECHNIQUES see (backtest, forecast): None = all. The ladder
@@ -752,7 +788,8 @@ class Config:
                                + self.declared_measures
                                + self.rate_series_columns
                                + self.extra_revalorizacion
-                               + self.ignore_cols)
+                               + self.ignore_cols
+                               + ([self.discount_value_column] if self.discount_value_column else []))   # a formula input, not a dim
 
         # [2] the orphans: present in the raw, declared nowhere
         orphan_columns = [column_name for column_name in frame.columns
@@ -791,7 +828,7 @@ class Config:
         unknown = [d for d in mandatory if d not in self.business_mandatory_dims]
         if unknown:
             raise ValueError(f"uplift_mandatory_dims must be mandatory dims; not mandatory: {unknown}")
-        return list(mandatory) + self.extra_revalorizacion
+        return list(mandatory) + [c for c in self.extra_revalorizacion if c != self.discount_value_column]
 
     @property
     def core_measures(self) -> list:

@@ -162,8 +162,14 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         pipeline_auv = (source[pipe_usd] / source[pipe_units].clip(lower=1e-9)).to_numpy(dtype=float)
         observed_auv = (source[configuration.renewed_usd_col] / source[configuration.renewed_units_col].replace(0, np.nan)).to_numpy(dtype=float)
         cell_uplift = source["_uplift_cell_id"].map(uplift_of_cell).fillna(1.0).to_numpy(dtype=float)
-        # the renewed price: observed where there is truth, pipeline AUV × uplift where there is not
+        # the renewed price: observed where there is truth, pipeline AUV × uplift where there is not;
+        # with a known discount the renewed price is the list price: pipeline AUV / (1 − discount) × increase
         auv = np.where(np.isfinite(observed_auv) & ~use_expected[keep].to_numpy(), observed_auv, pipeline_auv * cell_uplift)
+        if configuration.discount_value_column and configuration.discount_value_column in source.columns:
+            from run_uplift import contract_uplift, known_discount
+            contract = contract_uplift(source, configuration).to_numpy(dtype=float)
+            by_contract = known_discount(source, configuration).to_numpy()
+            auv = np.where(by_contract & ~(np.isfinite(observed_auv) & ~use_expected[keep].to_numpy()), pipeline_auv * contract, auv)
         # TWO rows per source: the re-entry of the (projected) renewals, and the acquisition
         # that will fall due with them (factor − 1). Each carries its origin label.
         for origin_label, units_of_origin in ((PIPELINE_PROJECTED, renewed), (PIPELINE_SIMULATED, renewed * np.maximum(factor - 1.0, 0.0))):
@@ -179,6 +185,8 @@ def extend_forecast_units(fine_table: pd.DataFrame, units: pd.DataFrame, series_
             new_rows[configuration.current_month_col] = 0
             new_rows["simulada"], new_rows["factor_adquisicion"] = 1, np.round(factor[keep_origin], 4)
             new_rows["origen_pipeline"] = origin_label
+            if configuration.discount_value_column and configuration.discount_value_column in new_rows.columns and origin_label == PIPELINE_PROJECTED:
+                new_rows[configuration.discount_value_column] = 0.0          # after renewing, the customer is at list price
             new_rows["_due"] = new_rows[period] + new_rows["_term"]
             new_rows["fu_id"] = new_rows["fs_id"] + "|" + str(month)
             new_rows["fu_key"] = new_rows["fu_id"].map(hash_key)
@@ -318,6 +326,19 @@ def assemble_forecast(future_rows: pd.DataFrame, series_estimates: pd.DataFrame,
     uplift_origin = dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["uplift_origen"]))
     rows["uplift"] = rows["uplift_cell_id"].map(uplift_of).fillna(1.0)
     rows["uplift_origen"] = rows["uplift_cell_id"].map(uplift_origin).fillna("neutro")
+    rows["uplift_via"] = UPLIFT_VIA_STATISTICAL
+    # THE CONTRACT PATH: where the row's discount is known, the renewal price is a rule,
+    # not an estimate: price_increase(period) / (1 − discount) × realization ratio of the cell
+    if configuration.discount_value_column and configuration.discount_value_column in rows.columns:
+        from run_uplift import contract_uplift, known_discount
+        by_contract = known_discount(rows, configuration)
+        ratio_of_cell = (dict(zip(decision_uplift["uplift_cell_id"], decision_uplift["ratio_realizacion"])) if "ratio_realizacion" in decision_uplift.columns
+                         else decision_uplift.attrs.get("realization_ratio", {}))
+        ratio = rows["uplift_cell_id"].map(ratio_of_cell).fillna(1.0)
+        rule = contract_uplift(rows, configuration) * ratio
+        rows.loc[by_contract, "uplift"] = rule[by_contract].clip(upper=configuration.uplift_cap)
+        rows.loc[by_contract, "uplift_via"] = UPLIFT_VIA_CONTRACT
+        rows.loc[by_contract, "uplift_origen"] = UPLIFT_VIA_CONTRACT
     rows["esperado_usd"] = rows[configuration.pipeline_usd_col] * rows["tasa"] * rows["uplift"]
     return rows
 
@@ -454,7 +475,7 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
     bands["nivel_riesgo"] = bands["fs_id"].map(level_of).fillna("D_sin_historia")
     detail_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", "uplift_cell_id", "celda_id",
                       period, configuration.pipeline_units_col, configuration.pipeline_usd_col, "h", "tecnica", "tecnica_origen",
-                      "tasa_pool_h", "desviacion_propia_pp", "tasa", "tasa_origen", "uplift", "uplift_origen", "esperado_usd",
+                      "tasa_pool_h", "desviacion_propia_pp", "tasa", "tasa_origen", "uplift", "uplift_origen", "uplift_via", "esperado_usd",
                       "simulada", "origen_pipeline", "mes_pendiente_cierre", "nivel_riesgo"]
     band_columns = ["fu_key", "comb_key", "fu_comb_key", "fs_id", "id_estimacion", period, "h", "banda_low_pp", "banda_high_pp",
                     "banda_low_usd", "banda_high_usd", "banda_origen", "esperado_usd"]
@@ -475,6 +496,10 @@ def run_forecast_assembly(fine_table: pd.DataFrame, units: pd.DataFrame, series_
         print(f"   {row[period]}  ${row['esperado_usd']:>11,.0f}  {row['pct_low']:+6.1f}% / {row['pct_high']:+5.1f}%  "
               f"simulated {row['pct_simulado']:5.1f}%  {'' if row['banda_monotona'] else 'band narrowed beyond tolerance'}")
     answers.print_pipeline_summary(summary)
+    if "pct_uplift_contrato" in summary.columns and summary["pct_uplift_contrato"].max() > 0:
+        total_row = summary[summary["bloque"] == "total"].iloc[0]
+        print(f"   uplift by contract (the discount is known, the renewal price is a rule): {total_row['pct_uplift_contrato']:.0f}% of the pipeline $; "
+              f"the rest takes the statistical uplift of its cell. Every discount added to the raw moves money from the second to the first and narrows the band.")
     explain(configuration,
             "TOTAL band = the band to promise ('if nothing changes, 9 times out of 10 the result is inside'). It combines two parts:",
             "idiosyncratic = each pool missing by its own luck, which cancels across thousands of pools (added in quadrature: √Σerror²), and",

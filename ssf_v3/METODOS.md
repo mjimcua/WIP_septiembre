@@ -318,6 +318,48 @@ cuadratura de las dos. En el sintético: idiosincrática ±1,9 %, común −2,5/
 
 ---
 
+## 9b · El uplift por contrato: donde el descuento se conoce, el precio no se estima
+
+**Idea.** Cuando conocemos el descuento actual del cliente, el precio de renovación lo
+fija el contrato: renueva al precio de lista vigente. El uplift deja de ser un promedio
+histórico y pasa a ser una regla:
+
+    uplift = subida_de_lista(periodo) / (1 − descuento) × ratio_de_realización(celda)
+
+con el descuento en tanto por 1 (0,30 = 30 %), 0 = precio de lista, nulo = desconocido
+(nunca se lee como 0). El descuento es una **entrada de fórmula**, no una dimensión de
+celda: va en cada fila del raw, no forma parte de ningún id y no reduce el soporte.
+
+**Ejemplo.** Lista 10, descuento 0,30 → paga 7. Sin subida: uplift 10 / 7 = 1,43. Con
+subida de lista a 11 (`price_increase_by_period = {"2027-01": 1.10}`): 11 / 7 = 1,57.
+
+**Las dos vías, fila a fila** (`uplift_via`): `contrato` donde el descuento se conoce y no
+supera `discount_cap` (0,9: por encima, licencias casi gratuitas, 1/(1−d) se dispara y se
+tratan como desconocidas); `estadistico` donde no: el uplift empírico de la celda, como
+siempre. El resumen dice cuánto dinero va por cada vía; cada descuento que se incorpore
+al raw mueve dinero de la segunda a la primera y estrecha la banda.
+
+**Validación de la regla** (`uplift_contract_check`). Sobre las renovaciones pasadas con
+descuento conocido, por celda de uplift y por autorenovación sí/no: el uplift observado,
+el de la regla, el % de dólares renovados dentro de ±2 % de la regla, y el **ratio de
+realización** = Σ renovado $ / Σ (unidades renovadas × AUV pipeline × regla). Si en un
+grupo el ratio es 0,85, ahí la gente renueva por debajo de lista (ofertas de renovación,
+más probable en renovación manual que en autorenovación) y la regla se corrige con ese
+ratio. Se aplica solo donde el grupo tiene ≥ `uplift_floor` renovadores. Matiz: el uplift
+solo se mide sobre quien renueva; el ratio absorbe que los descuentos altos renueven
+menos, y sirve para el forecast, no para leerlo como política de ofertas sin cruzarlo
+con la tasa.
+
+**Reentradas.** Tras renovar, el descuento del cliente es el de renovación (0): la fila
+`proyectada` reentra con descuento 0 y su uplift en 2027 es solo la subida de lista. Esto
+resuelve la sobreestimación del segundo año (antes se copiaba la celda de la fila fuente
+y se aplicaba otra vez 1,67). La fila `simulada` (adquisición) conserva el descuento de
+la fuente como aproximación al de captación.
+
+**Dónde.** `run_uplift.py` (`price_increase_factor`, `known_discount`, `contract_uplift`,
+`realization_check`, `realization_ratio_by_cell`), `run_forecast_assembly.py`
+(`assemble_forecast`, `extend_forecast_units`).
+
 ## 10 · Bootstrap del uplift
 
 **Problema.** El uplift es un cociente de sumas (Σren$ / Σ(ren unidades × AUV pipeline));

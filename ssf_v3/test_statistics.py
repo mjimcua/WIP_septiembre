@@ -241,8 +241,48 @@ def test_band_calibration_simulated() -> None:
         RECORDER.check(holdout["err_pp"].abs().mean() < 12, f"the exam error on constant-rate series is sampling-sized ({holdout['err_pp'].abs().mean():.1f} pp)")
 
 
+def test_discount_churn_planted() -> None:
+    """A fine table where the discount lowers the rate 10 pp among neutral customers and
+    does NOTHING among no_instalado customers (who renew at 20 % regardless): the analysis
+    must find the neutral gap, find no gap for no_instalado, and rank the signal above the
+    discount in importance."""
+    RECORDER.start_block("S9 · discount and churn on a planted effect")
+    import analysis_discount_churn as dc
+    rows = []
+    months = pd.period_range("2025-01", periods=12, freq="M")
+    for month in months:
+        for region in ("EU", "NA"):
+            for state_flag in (0, 1):
+                for bucket in ("d0", "d40"):
+                    base = 0.20 if state_flag else (0.80 if bucket == "d0" else 0.70)
+                    base += 0.03 if region == "NA" else 0.0
+                    n = 500
+                    k = RNG.binomial(n, base)
+                    rows.append(dict(period=month, dataset_role="entrenamiento", region=region, no_instalado=state_flag, dormant=0, softcancel=0, autorenew=0,
+                                     discount=bucket, newcust=0, total_tr_units=n, total_tr_usd=n * 30.0, total_renewed_units=k, total_renewed_usd=k * 33.0))
+    fine = pd.DataFrame(rows)
+    with tempfile.TemporaryDirectory() as folder:
+        configuration = Config(sql_engine=None, sql_schema=None, outdir=folder, business_mandatory_dims=["region"],
+                               structural_timevarying_dims={"dormant": "negative", "softcancel": "negative", "no_instalado": "negative", "autorenew": "positive"},
+                               extra_renovacion=[], extra_revalorizacion=["discount", "newcust"], no_discount_value="d0", console_explanations=False)
+        with quiet():
+            result = dc.run_discount_churn(fine, configuration)
+    by_state = result["by_state"]
+    neutral = by_state[(by_state["estado"] == "neutro") & (by_state["tramo"] == "d40")].iloc[0]
+    flagged = by_state[(by_state["estado"] == "no_instalado") & (by_state["tramo"] == "d40")].iloc[0]
+    RECORDER.check(-12 < neutral["hueco_pp"] < -8 and neutral["z"] < -3, f"among neutral customers the discount gap is ≈ −10 pp and significant ({neutral['hueco_pp']:+.1f} pp, z {neutral['z']:+.1f})")
+    RECORDER.check(abs(flagged["hueco_pp"]) < 3 and abs(flagged["z"]) < 2, f"among no_instalado customers there is no gap ({flagged['hueco_pp']:+.1f} pp, z {flagged['z']:+.1f}): the flag dominates")
+    importance = result["importance"].set_index("grupo")
+    RECORDER.check(importance.loc["estado", "r2_perdido_al_quitarlo"] > importance.loc["tramo", "r2_perdido_al_quitarlo"] * 5,
+                   "the signal explains far more variance than the discount")
+    effects = result["effects"]
+    discount_effect = effects[(effects["variable"] == "tramo") & (effects["valor"] == "d40")].iloc[0]
+    RECORDER.check(discount_effect["efecto_pp"] < 0 and abs(discount_effect["z"]) > 2, f"the adjusted discount effect is negative and significant ({discount_effect['efecto_pp']:+.1f} pp): an average over states that hides where it acts")
+
+
 ALL_TESTS = [test_wilson_coverage, test_credibility_properties, test_quadrature_measured, test_no_leakage_into_the_exam,
-             test_benchmark_false_positives_and_power, test_kitagawa_closes, test_uplift_unbiased, test_band_calibration_simulated]
+             test_benchmark_false_positives_and_power, test_kitagawa_closes, test_uplift_unbiased, test_band_calibration_simulated,
+             test_discount_churn_planted]
 
 
 def main() -> int:

@@ -38,6 +38,7 @@ import analysis_data_profile
 import analysis_dimensions
 import analysis_seasonality_benchmark
 import analysis_top_movers
+import analysis_discount_churn
 import analysis_signal_maturation
 import answers
 import informe
@@ -180,6 +181,7 @@ def run_analysis(configuration: Config) -> dict:
         units, series_summary, dimensions["decision_eta2"], configuration)
     key_bridge = build_key_bridge(fine_table, units, decision_support, configuration)
     composition = analysis_dimensions.run_composition_analysis(units, configuration)
+    discount_churn = analysis_discount_churn.run_discount_churn(fine_table, configuration)
 
     section("PHASE 2 — seasonality benchmark (big series) and pool reference", started); started = time.time()
     test_months = units.loc[units[configuration.dataset_role_col] == ROLE_TEST, configuration.period_col]
@@ -223,7 +225,7 @@ def run_analysis(configuration: Config) -> dict:
                    series_card=series_card, key_bridge=key_bridge, parent_ladder=parent_ladder, monthly_series=monthly_series,
                    decisions=decisions, backtest=backtest, dimensions=dimensions, forecast=forecast, validation=report,
                    profiles=profiles, baseline=baseline, benchmark=benchmark, composition=composition, sheets=sheets, top_movers=movers,
-                   signal_maturation=maturation)
+                   signal_maturation=maturation, discount_churn=discount_churn)
     try:
         results["informe"] = informe.build_report(results, configuration)
     except Exception as error:                              # the report never stops the analysis

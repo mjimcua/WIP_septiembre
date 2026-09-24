@@ -49,7 +49,7 @@ def role_of(month: pd.Period) -> str:
     return "train"
 
 
-def build_raw(seed: int = 7) -> pd.DataFrame:
+def build_raw(seed: int = 7, with_discount_pct: bool = False) -> pd.DataFrame:
     """Build the synthetic raw. Deterministic for a given seed."""
     rng = np.random.default_rng(seed)
     collected_rows = []
@@ -117,4 +117,8 @@ def build_raw(seed: int = 7) -> pd.DataFrame:
            months=[m for m in MONTHS if role_of(m) == "projection"])
     # time_series universe
     series("EU", "A", "kiosk", 0, 0, 0, 0, 50, lambda i, m: .65, flat, time_series=1)
-    return pd.DataFrame(collected_rows)
+    raw = pd.DataFrame(collected_rows)
+    if with_discount_pct:
+        # the exact discount in tanto por 1 (0.4 for the d40 bucket, 0.0 for d0), UNKNOWN (null) in the kiosk channel
+        raw["discount_pct"] = np.where(raw["channel"] == "kiosk", np.nan, np.where(raw["discount"] == "d40", 0.4, 0.0))
+    return raw

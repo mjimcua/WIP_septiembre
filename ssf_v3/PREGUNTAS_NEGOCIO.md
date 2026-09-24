@@ -104,6 +104,24 @@ maduración de las señales si la composición final es la de los últimos doce 
 Lectura: las alertas de `nivel_anomalo` son meses que ya van peor de lo habitual; las de
 `tendencia`, señales que crecen mes a mes en los cierres.
 
+## 12b · ¿Cuánto del forecast tiene el precio fijado por contrato?
+
+`pipeline_summary.pct_uplift_contrato` y `forecast_detail.uplift_via`: el % del pipeline
+cuyo precio de renovación es una regla (descuento conocido: lista / (1 − descuento) ×
+subida × ratio de realización) frente al estimado por celda. `uplift_contract_check` dice
+si la regla se cumple (% de $ dentro de ±2 %) y dónde no (ofertas de renovación).
+
+## 13 · ¿El descuento es un driver de churn?
+
+`discount_churn_bucket` (tasa por tramo, bruta y estandarizada por celda, con Wilson),
+`discount_churn_state` (el mismo contraste dentro de cada estado de señal: ¿el descuento
+separa entre los que no instalaron?), `discount_churn_adjusted` (efectos ajustados),
+`discount_churn_importance` (qué explica más varianza: señales, celda o descuento) y
+`discount_churn_price` (salto de precio frente a tasa). Capítulo 8 del informe.
+Lectura: si las señales explican diez veces más que el descuento y dentro de
+`no_instalado` los tramos no se distinguen, el precio no es el primer driver. Es
+evidencia descriptiva sobre datos agregados, no un experimento.
+
 ## Y una que responde por el camino
 
 **¿De dónde sale cada número?** `sheet(clave)`: la ficha de cualquier serie, unidad, fila,

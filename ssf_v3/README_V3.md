@@ -43,7 +43,7 @@ versión mensual que solo aplica las decisiones ya tomadas.
 
 0 raw y calendario desde el mes en curso · 1.1 series y ruido binomial · 1.2 qué
 dimensiones separan comportamiento · 1.3 escalera con credibilidad y niveles de riesgo ·
-1.4 composición (contada, no buscada) y señales · 2 benchmark de estacionalidad (una
+1.4 composición (contada, no buscada) y señales · 1.5 descuento y churn · 2 benchmark de estacionalidad (una
 decisión para toda la cartera) · 3 backtest con dos baterías (un mes y seis meses vista),
 sin fuga, con bandas idiosincrática y común · 4 revalorización · 5 ensamblaje, maduración
 de señales, respuestas, región, top movers, baseline · fichas · informe · validación.
@@ -63,10 +63,11 @@ de señales, respuestas, región, top movers, baseline · fichas · informe · v
 | `run_rate_series.py` | 1.1 | series, huecos, tasas, signo, resumen por serie |
 | `analysis_dimensions.py` | 1.2 / 1.4 | η² y orden de colapso; composición (Kitagawa) y coste de la vista solo-mandatory; calibración de señales |
 | `run_support_ladder.py` | 1.3 | parientes por signo, pools, subida, credibilidad, estimación, niveles de riesgo |
+| `analysis_discount_churn.py` | 1.5 | ¿el descuento es un driver de churn? tasa por tramo estandarizada por celda, dentro de cada estado de señal, efectos ajustados, importancia relativa, precio vs tasa |
 | `analysis_seasonality_benchmark.py` | 2 | el benchmark de estacionalidad sobre las series grandes neutras: una decisión |
 | `techniques.py` | 3 / 5 | 10 técnicas (nivel, Theta, Holt amortiguado; efectos de mes solo con veredicto) |
 | `analysis_backtest.py` | 2-3 | serie mensual por pool, referencia de pools, backtest sin fuga, campeón por visión, bandas, examen, error común |
-| `run_uplift.py` | 4 | revalorización por celda, padre y celda bajo el suelo, bootstrap, tope |
+| `run_uplift.py` | 4 | revalorización: la vía de contrato (descuento conocido → regla, validada con el ratio de realización) y la estadística por celda (padre y celda bajo el suelo, bootstrap, tope) |
 | `run_forecast_assembly.py` | 5 | reentradas (proyectada / simulada), tasa por fila (forma del pool + nivel propio), bandas, agregación |
 | `answers.py` | 5 | resumen de la pipeline, respuestas de negocio, región, forecast ajustado |
 | `analysis_signal_maturation.py` | 5 | composición por celda, foto mensual, maduración pendiente, ajuste, alertas |
@@ -78,14 +79,14 @@ de señales, respuestas, región, top movers, baseline · fichas · informe · v
 | `pipeline.py` | — | `run_analysis`, `run_pipeline`, el puente de claves, las fichas |
 | `main.py`, `synthetic_v3.py` | — | la configuración de producción; el dataset sintético de pruebas |
 
-## Las tablas (54, prefijo `sff_`)
+## Las tablas (60, prefijo `sff_`)
 
 Clasificadas en `config.TABLE_KIND`:
 
 - **producto** (las que lee el informe y negocio): `pipeline_summary`, `business_summary`,
   `forecast_by_region`, `forecast_by_level`, `horizon_report_total`, `top_movers`,
   `risk_levels`, `decision_estacionalidad`, `baseline_summary`, `signal_adjustment`,
-  `signal_alerts`, `validation_report`, `dial_buckets`, `metric_legend`.
+  `signal_alerts`, `validation_report`, `dial_buckets`, `metric_legend`, `discount_churn_*` (5).
 - **bi** (dimensiones y hechos para Power BI): `fact_fu`, `fact_fine`, `lookup_fu`,
   `lookup_comb`, `key_bridge`, `forecast_detail`, `forecast_bands`, `series_card`,
   `fu_extended`, `signal_snapshot`, `mix_shift`.

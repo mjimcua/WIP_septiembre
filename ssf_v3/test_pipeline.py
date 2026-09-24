@@ -199,12 +199,50 @@ def test_signal_maturation() -> None:
                    "business_summary carries forecast_ajustado_usd below the photo forecast")
 
 
+def test_contract_uplift() -> None:
+    """The synthetic raw carries `discount_pct` (0.0 / 0.4, unknown in the kiosk channel).
+    With the contract path on: rows with a known discount get uplift = increase / (1 − d) ×
+    realization ratio, rows with an unknown discount keep the statistical uplift, projected
+    re-entries renew at list price (discount 0), and a declared price increase lifts the
+    contract uplift from its month on."""
+    RECORDER.start_block("E · the contract path of the uplift")
+    with tempfile.TemporaryDirectory() as folder:
+        class Synthetic(Config):
+            def read_raw(self):
+                return build_raw(7, with_discount_pct=True)
+        configuration = Synthetic(sql_engine=None, sql_schema=None, outdir=folder, business_mandatory_dims=["region"],
+                                  structural_timevarying_dims=TIMEVARYING, extra_renovacion=["product", "channel"],
+                                  extra_revalorizacion=["discount", "newcust"], extended_horizon_end="2027-12",
+                                  benchmark_group_dims=["region", "product"], benchmark_min_support=100, sheets_top_series=0,
+                                  console_explanations=False, discount_value_column="discount_pct",
+                                  price_increase_by_period={"2027-06": 1.10}, contract_apply_realization_ratio=True)
+        with quiet():
+            results = run_analysis(configuration)
+    detail = results["forecast"]["forecast_detail"]
+    decision = results["decisions"]["decision_uplift"]
+    RECORDER.check(set(detail["uplift_via"]) == {"contrato", "estadistico"}, "both paths are used: contract where the discount is known, statistical where it is not")
+    kiosk = detail[detail["fs_id"].str.contains("kiosk") & (detail["origen_pipeline"] == "real")]
+    RECORDER.check((kiosk["uplift_via"] == "estadistico").all(), "real rows with an unknown discount (kiosk) stay on the statistical path (their projected re-entries renew at list price and become contract)")
+    contract = detail[(detail["uplift_via"] == "contrato") & (detail["origen_pipeline"] == "real")]
+    ratio_of = dict(zip(decision["uplift_cell_id"], decision["ratio_realizacion"]))
+    fine = results["fine_table"]
+    sample = contract.merge(fine[["fu_comb_key", "discount_pct"]], on="fu_comb_key", how="left").dropna(subset=["discount_pct"]).head(200)
+    expected = np.where(sample["period"].astype(str) >= "2027-06", 1.10, 1.0) / (1 - sample["discount_pct"]) * sample["uplift_cell_id"].map(ratio_of).fillna(1.0)
+    RECORDER.check(np.allclose(sample["uplift"], np.minimum(expected, 3.0), atol=1e-6), "contract uplift = increase(period) / (1 − discount) × realization ratio of the cell, capped")
+    projected = detail[(detail["origen_pipeline"] == "proyectada") & (detail["uplift_via"] == "contrato")]
+    RECORDER.check(len(projected) > 0 and (projected["uplift"] <= 1.10 * projected["uplift_cell_id"].map(ratio_of).fillna(1.0).max() + 1e-6).all(),
+                   "projected re-entries renew at list price: their contract uplift is only the price increase (× ratio), never 1/(1 − d) again")
+    check = results["decisions"].get("decision_uplift")
+    RECORDER.check("ratio_realizacion" in decision.columns and (decision["ratio_realizacion"] > 0).all(), "the realization ratio is persisted per cell in decision_uplift")
+
+
 def main() -> int:
     print("═" * 74 + "\nTEST pipeline · SFF v3 on the synthetic dataset\n" + "═" * 74)
     context = test_analysis_taxonomy_1()
     test_monthly_run(context)
     test_analysis_taxonomy_2()
     test_signal_maturation()
+    test_contract_uplift()
     return RECORDER.print_panel("PIPELINE TEST")
 
 

@@ -109,6 +109,13 @@ Compartir: la tabla (pocas filas) y, si hay un flag dudoso, su serie mensual.
 
 ## FASE 2 · dinámica
 
+**P1.6 ★★ Descuento y churn** — `discount_churn_state`, `discount_churn_importance` (consola `[1.5]`, capítulo 8 del informe).
+```sql
+SELECT estado, tramo, contratos, tasa_bruta, tasa_estandarizada, hueco_pp, z FROM sff_discount_churn_state ORDER BY estado, tramo
+SELECT * FROM sff_discount_churn_importance ORDER BY r2_perdido_al_quitarlo DESC
+```
+Qué mirar: el hueco de cada tramo con el tramo sin descuento dentro de cada estado (si entre los `no_instalado` no hay hueco, la señal manda); y qué grupo de variables pierde más R² al quitarlo. Compartir: las dos tablas y la figura 09.
+
 **P2.1 ★★ El benchmark de estacionalidad** — `decision_estacionalidad` (consola `[2] SEASONALITY BENCHMARK`).
 ```sql
 SELECT fs_id, grupo, usd_proyectado, n_mediana, meses, phi, amplitud_pp, mes_alto, mes_bajo, consistencia_alto, consistencia_bajo,

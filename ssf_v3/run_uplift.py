@@ -124,9 +124,27 @@ def build_uplift_chain(decision_uplift: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_uplift(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """Phase 4 end to end. Persists decision_uplift and uplift_chain. Returns decision_uplift."""
+    """Phase 4: the statistical uplift per cell (as before) and, when the discount column
+    exists, the validation of the contract rule (`uplift_contract_check`). The contract
+    path itself is applied row by row in the assembly. Persists decision_uplift and
+    uplift_chain. Returns decision_uplift (with attrs["realization_ratio"] per cell)."""
     renewers = renewer_rows(fine_table, configuration)
+    check = realization_check(renewers, configuration) if configuration.discount_value_column else pd.DataFrame(
+        columns=["uplift_cell_id", "autorenew", "n_renovadores", "usd_renovado", "uplift_observado", "uplift_regla", "pct_usd_dentro_2pct", "ratio_realizacion", "aplicar"])
+    configuration.write(check, "uplift_contract_check")
+    if configuration.discount_value_column:
+        known = known_discount(renewers, configuration)
+        if len(check):
+            weighted_within = float(np.average(check["pct_usd_dentro_2pct"], weights=np.maximum(check["usd_renovado"], 1e-9)))
+            print(f"[4] contract rule check on past renewals with a known discount ({100 * known.mean():.0f}% of renewer rows): "
+                  f"{weighted_within:.0f}% of renewed $ within ±2% of price_increase / (1 − discount) · realization ratio applied in "
+                  f"{int(check['aplicar'].sum())} cell×autorenew groups (dollar-weighted mean {np.average(check.loc[check['aplicar'] == 1, 'ratio_realizacion'], weights=np.maximum(check.loc[check['aplicar'] == 1, 'usd_renovado'], 1e-9)) if check['aplicar'].any() else float('nan'):.3f})")
+        if configuration.statistical_uplift_from_unknown_only:
+            renewers = renewers[~known]
     decision = estimate_uplift_cells(renewers, configuration)
+    ratios = realization_ratio_by_cell(check, configuration) if len(check) else {}
+    decision["ratio_realizacion"] = decision["uplift_cell_id"].map(ratios).fillna(1.0).round(4)
+    decision.attrs["realization_ratio"] = ratios
     configuration.write(decision, "decision_uplift")
     configuration.write(build_uplift_chain(decision), "uplift_chain")
     below = decision[decision["n_renovadores"] < configuration.uplift_floor]
@@ -134,3 +152,78 @@ def run_uplift(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
           f"{len(below)} cells below the floor ({decision['uplift_origen'].value_counts().to_dict()}) · "
           f"{int(decision['recortado'].sum())} clipped at the cap {configuration.uplift_cap}")
     return decision
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# THE CONTRACT PATH · where the discount is known, the renewal price is a rule
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+def price_increase_factor(periods: pd.Series, configuration: Config) -> np.ndarray:
+    """The list-price factor of every period: the product of the increases dated at or
+    before it (`price_increase_by_period`, {"2027-01": 1.05}). 1.0 with no increases."""
+    factors = np.ones(len(periods), dtype=float)
+    if not configuration.price_increase_by_period:
+        return factors
+    months = pd.PeriodIndex(periods.astype(str), freq="M")
+    for start, factor in configuration.price_increase_by_period.items():
+        factors = np.where(months >= pd.Period(start, freq="M"), factors * float(factor), factors)
+    return factors
+
+
+def known_discount(rows: pd.DataFrame, configuration: Config) -> pd.Series:
+    """True where the row's discount is informed and below the cap (the contract path)."""
+    column = configuration.discount_value_column
+    if column is None or column not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    discount = pd.to_numeric(rows[column], errors="coerce")
+    return discount.notna() & (discount >= 0) & (discount <= configuration.discount_cap)
+
+
+def contract_uplift(rows: pd.DataFrame, configuration: Config) -> pd.Series:
+    """uplift = price_increase(period) / (1 − discount), NaN where the discount is unknown."""
+    discount = pd.to_numeric(rows[configuration.discount_value_column], errors="coerce") if configuration.discount_value_column in rows.columns else pd.Series(np.nan, index=rows.index)
+    increase = price_increase_factor(rows[configuration.period_col], configuration)
+    rule = increase / (1.0 - discount.clip(upper=0.999))
+    return rule.where(known_discount(rows, configuration))
+
+
+def realization_check(renewers: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """The validation of the rule on past renewals with a known discount, per uplift cell
+    (and per autorenew value when that flag exists): the observed uplift, the rule uplift,
+    the share of renewed dollars within ±2 % of the rule, and the realization ratio
+    = Σ renewed$ / Σ (renewed units × pipeline AUV × rule), dollar-weighted.
+    OUTPUT: uplift_contract_check (uplift_cell_id, autorenew, n_renovadores, usd_renovado,
+            uplift_observado, uplift_regla, pct_usd_dentro_2pct, ratio_realizacion, aplicar)."""
+    rows = renewers[known_discount(renewers, configuration)].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=["uplift_cell_id", "autorenew", "n_renovadores", "usd_renovado", "uplift_observado", "uplift_regla",
+                                     "pct_usd_dentro_2pct", "ratio_realizacion", "aplicar"])
+    rows["uplift_regla"] = contract_uplift(rows, configuration)
+    autorenew_column = next((c for c in configuration.structural_timevarying_dims if "autoren" in c.lower()), None)
+    rows["autorenew"] = rows[autorenew_column].astype(str) if autorenew_column else "*"
+    rows["within"] = (rows["uplift_fila"] / rows["uplift_regla"]).between(0.98, 1.02)
+    rows["rule_denominator"] = rows[configuration.renewed_units_col] * rows["auv_pipeline"] * rows["uplift_regla"]
+    out = []
+    for (cell, autorenew), block in rows.groupby(["uplift_cell_id", "autorenew"]):
+        renewed_usd = float(block[configuration.renewed_usd_col].sum())
+        ratio = renewed_usd / float(block["rule_denominator"].sum()) if block["rule_denominator"].sum() > 0 else np.nan
+        renewers_count = float(block[configuration.renewed_units_col].sum())
+        out.append(dict(uplift_cell_id=cell, autorenew=autorenew, n_renovadores=renewers_count, usd_renovado=round(renewed_usd, 2),
+                        uplift_observado=round(ratio_of_sums(block, configuration), 4),
+                        uplift_regla=round(float(np.average(block["uplift_regla"], weights=np.maximum(block["rule_denominator"], 1e-9))), 4),
+                        pct_usd_dentro_2pct=round(100 * float(block.loc[block["within"], configuration.renewed_usd_col].sum()) / max(renewed_usd, 1e-9), 1),
+                        ratio_realizacion=round(ratio, 4) if np.isfinite(ratio) else np.nan,
+                        aplicar=int(renewers_count >= configuration.uplift_floor and np.isfinite(ratio))))
+    return pd.DataFrame(out)
+
+
+def realization_ratio_by_cell(check: pd.DataFrame, configuration: Config) -> dict:
+    """uplift_cell_id → realization ratio to apply (dollar-weighted over autorenew values),
+    1.0 where the cell has no support or the correction is switched off."""
+    if not configuration.contract_apply_realization_ratio or check is None or check.empty:
+        return {}
+    usable = check[check["aplicar"] == 1]
+    ratios = {}
+    for cell, block in usable.groupby("uplift_cell_id"):
+        ratios[cell] = float(np.average(block["ratio_realizacion"], weights=np.maximum(block["usd_renovado"], 1e-9)))
+    return ratios

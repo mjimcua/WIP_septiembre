@@ -62,6 +62,10 @@ LEGEND = {
                   referencia="0", mucho="|sesgo| mayor que el error binomial: hay un desplazamiento sistemático", poco="dentro del ruido"),
     "maduración pendiente": dict(unidad="pp de la celda", definicion="proporción final de una señal (últimos 12 meses cerrados) menos la que la foto de hoy muestra para un mes futuro",
                                  referencia="0 a un mes vista; crece con la distancia", mucho="> 5 pp: mucho dinero cambiará de serie antes de vencer", poco="0"),
+    "tasa estandarizada": dict(unidad="%", definicion="la tasa de un tramo de descuento aplicada al mismo reparto de celdas (regiones, productos…) que el resto de tramos: la diferencia entre tramos es comportamiento, no quién está en cada tramo",
+                              referencia="su diferencia con la tasa bruta es el efecto de composición", mucho="huecos entre tramos > 5 pp con z > 3", poco="huecos dentro del ruido (|z| < 2)"),
+    "importancia relativa": dict(unidad="R²", definicion="parte de la varianza de las tasas de renovación (entre celdas × estado × descuento × cliente nuevo) que explica un grupo de variables solo, y la que se pierde al quitarlo del modelo completo",
+                                 referencia="comparar señales, celda y descuento entre sí", mucho="> 0,3", poco="< 0,05: esa variable apenas separa"),
     "dinero disputable": dict(unidad="$", definicion="lo que las series con señal negativa renuevan por debajo de los neutros de su celda × su pipeline: cota superior de lo que una recuperación puede conseguir",
                               referencia="comparar con el forecast del mismo periodo", mucho="> 5 % del forecast", poco="< 1 %"),
 }
@@ -455,6 +459,56 @@ def chapter_baseline(report: Report, results: dict, configuration: Config) -> No
     report.p("**Y entonces:** si la hoja acierta igual, el framework aporta la banda y la trazabilidad; si acierta peor, aporta también el número. Y explica de dónde sale la diferencia con la cifra de negocio cuando la hay.")
 
 
+def chapter_discount(report: Report, results: dict, configuration: Config) -> None:
+    """8 · Price and churn: is the discount a driver?"""
+    analysis = results.get("discount_churn", {})
+    if not analysis:
+        return
+    by_bucket, by_state, effects, importance = analysis["by_bucket"], analysis["by_state"], analysis["effects"], analysis["importance"]
+    report.h(1, "8 · Precio y churn: ¿el descuento es un driver?")
+    report.legend("tasa estandarizada", "importancia relativa")
+    reference = str(by_state["tramo_referencia"].iloc[0]) if len(by_state) else "—"
+    spread = 100 * (by_bucket["tasa_estandarizada"].max() - by_bucket["tasa_estandarizada"].min()) if len(by_bucket) else np.nan
+    report.p(f"La creencia: quien tiene descuento renueva a precio completo y se va. La prueba, sobre {by_bucket['contratos'].sum():,.0f} contratos de meses cerrados, con la composición de celdas fijada: "
+             f"entre el tramo que mejor renueva y el que peor hay **{spread:.1f} pp de diferencia estandarizada** (referencia: {reference} = sin descuento).")
+    neutral = by_state[(by_state["estado"] == "neutro") & (by_state["tramo"] != reference)]
+    flagged = by_state[(by_state["estado"] == "no_instalado") & (by_state["tramo"] != reference)] if "no_instalado" in set(by_state["estado"]) else pd.DataFrame()
+    if len(neutral):
+        row = neutral.reindex(neutral["hueco_pp"].abs().sort_values(ascending=False).index).iloc[0]
+        report.p(f"Entre los clientes **sin señal**, el tramo {row['tramo']} renueva {row['hueco_pp']:+.1f} pp respecto a {reference} (z = {row['z']:+.1f}: "
+                 + ("una diferencia real." if abs(row["z"]) >= 2 else "dentro del ruido.") + ")")
+    if len(flagged) and flagged["hueco_pp"].notna().any():
+        row = flagged.reindex(flagged["hueco_pp"].abs().sort_values(ascending=False).index).iloc[0]
+        report.p(f"Entre los clientes que **no instalaron el producto**, el mismo contraste da {row['hueco_pp']:+.1f} pp (z = {row['z']:+.1f}): "
+                 + ("el descuento también separa ahí." if abs(row["z"]) >= 2 else "el descuento no separa: manda la señal."))
+    if len(importance):
+        ranked = importance.sort_values("r2_perdido_al_quitarlo", ascending=False)
+        top = ranked.iloc[0]
+        discount_row = importance[importance["grupo"] == "tramo"]
+        report.p(f"**Qué explica las tasas:** {top['grupo']} es lo que más varianza pierde el modelo al quitarlo ({top['r2_perdido_al_quitarlo']:.2f} de R²); "
+                 f"el descuento, {float(discount_row['r2_perdido_al_quitarlo'].iloc[0]) if len(discount_row) else np.nan:.2f}. El modelo completo explica el {100 * top['r2_modelo_completo']:.0f} % de la varianza entre grupos.")
+    if len(effects):
+        report.table(effects, ["variable", "valor", "referencia", "efecto_pp", "se_pp", "z"], floatfmt={"efecto_pp": "{:+.1f}", "se_pp": "{:.1f}", "z": "{:+.1f}"})
+    # figure: rate by bucket inside each state, with the reference marked
+    plotted = by_state[by_state["contratos"] >= 30]
+    if len(plotted):
+        figure, axis = plt.subplots(figsize=(FIGURE_WIDTH, 4.5))
+        buckets = sorted(plotted["tramo"].unique())
+        x = np.arange(len(buckets))
+        states = [s for s in ("neutro", "no_instalado", "dormant", "softcancel", "autorenew") if s in set(plotted["estado"])]
+        width = 0.8 / max(len(states), 1)
+        for index, state in enumerate(states):
+            block = plotted[plotted["estado"] == state].set_index("tramo").reindex(buckets)
+            axis.bar(x + (index - (len(states) - 1) / 2) * width, 100 * block["tasa_comparada"] if "tasa_comparada" in block.columns else 100 * block["tasa_estandarizada"].fillna(block["tasa_bruta"]),
+                     width=width, color=PALETTE[index % len(PALETTE)], alpha=0.85, label=state)
+        axis.set_xticks(x); axis.set_xticklabels(buckets, fontsize=9)
+        axis.set_ylabel("tasa de renovación, %")
+        axis.set_title("La señal separa mucho más que el descuento: dentro de cada estado, los tramos apenas se distinguen" if (len(importance) and importance.set_index("grupo").loc["tramo", "r2_perdido_al_quitarlo"] < 0.05) else "El descuento separa incluso dentro de cada estado", loc="left", fontsize=11)
+        axis.legend(fontsize=9)
+        report.figure(figure, "09_descuento_por_estado", "Tasa de renovación por tramo de descuento dentro de cada estado de señal (composición de celdas fijada donde hay soporte). Si las barras de un mismo color son parecidas, el descuento no es el driver en ese estado.")
+    report.p("**Y entonces:** es evidencia descriptiva sobre datos agregados, no un experimento: quien acepta un descuento puede diferir en cosas que las dimensiones no ven. Pero si las señales explican diez veces más varianza que el descuento, la política de retención debería empezar por la instalación y el uso, no por el precio.")
+
+
 def chapter_annex(report: Report, results: dict, configuration: Config, legend: pd.DataFrame) -> None:
     report.h(1, "Anexo")
     report.h(2, "A · Las fichas de las series más grandes")
@@ -488,6 +542,7 @@ def build_report(results: dict, configuration: Config) -> str:
     chapter_precision(report, results, configuration)
     chapter_risk(report, results, configuration)
     chapter_baseline(report, results, configuration)
+    chapter_discount(report, results, configuration)
     chapter_annex(report, results, configuration, legend)
     path = report.write()
     print(f"[informe] {path} · {len(report.figures)} figuras")

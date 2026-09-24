@@ -217,3 +217,5 @@ Por orden de coste de información. Se aplican solo a series por debajo del suel
 - **Baseline**: la previsión de hoja (tasa en $ de los últimos 1/3/12 meses por grano × pipeline) con su walk-forward (`baseline_summary`).
 - **Informe**: `<outdir>/informe/informe.md`, portada + 7 capítulos + anexo; `metric_legend` es la leyenda de métricas.
 - **Tipo de tabla**: `producto` / `bi` / `intermedia` (`config.TABLE_KIND`).
+- **Uplift por contrato**: donde el descuento exacto se conoce, uplift = subida de lista / (1 − descuento) × ratio de realización de la celda (`uplift_via = contrato`); donde no, el estadístico de la celda (`estadistico`). Parámetros `discount_value_column`, `price_increase_by_period`, `discount_cap`, `contract_apply_realization_ratio`, `statistical_uplift_from_unknown_only`. Tabla `uplift_contract_check`.
+- **Descuento y churn** (fase 1.5): tasa estandarizada por tramo de descuento (composición de celdas fijada), contraste dentro de cada estado de señal, efectos ajustados (regresión ponderada en logit), importancia relativa (R² solo / perdido), salto de precio frente a tasa. Parámetros `discount_column`, `no_discount_value`.

@@ -40,6 +40,23 @@ Generado del bloque TUNABLE PARAMETERS de `config.py` (la fuente de verdad es el
 | `own_level_min_history_months` | `12` | Months of history a series needs to be level "A_propio" even when it has support: one full year, so a seasonal series has seen every season. |
 | `signed_ladder_max_loss` | `0.05` | How far a series WITH SIGN may climb beyond its mandatory cell × sign, keeping the sign: it may collapse mandatory dims in the sequential order while the CUMULATIVE R² lost (decision_eta2.perdida_secuencial) stays ≤ this. 0.0 = the strict rule (the ladder of a signed series ends at the cell × sign). 0.05 (default) lets it collapse the dims that separate almost nothing (in Kamelot: band_2, band_1, product_2, product_1), i.e. cohorts nearly identical — pooled signal, not mixed cohorts. With 10 mandatory dims the strict rule left 4,237 signed series ($8.3M) without a pool. |
 
+## phase 4 · the contract path of the uplift
+
+| Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
+|---|---|---|
+| `discount_value_column` | `None` | Where the customer's CURRENT discount is known, the renewal price is not estimated: the contract fixes it. `discount_value_column` names the raw column with the exact discount in tanto por 1 (0.30 = 30 %); 0 = list price, null = unknown (never read as 0). It is a formula input, not a cell dimension: it rides along every raw row (nulls allowed), it is not part of any id, and it does not cut the support. The row's uplift = price_increase(period) / (1 − discount) × realization ratio of its cell; rows with an unknown discount (or one above `discount_cap`, near-free licences) take the statistical uplift of their cell as before. None = every row is statistical. |
+| `price_increase_by_period` | `{}` | Multiplicative list-price increases by period ({"2027-01": 1.05}); the factor of a month is the product of every increase dated at or before it. Empty = no increase. |
+| `discount_cap` | `0.9` | Discounts above this are treated as unknown (1/(1−d) explodes for near-free licences). |
+| `contract_apply_realization_ratio` | `True` | The realization ratio (observed uplift / rule uplift, dollar-weighted, per uplift cell) corrects the rule where renewal offers make customers renew below list. Applied only where the cell has ≥ uplift_floor renewers with a known discount; else 1.0. |
+| `statistical_uplift_from_unknown_only` | `False` | Estimate the statistical uplift only with rows whose discount is unknown (pending confirmation: if the missing discount is not random, mixing both populations biases it). |
+
+## phase 1.5 · discount and churn (ANALYSIS)
+
+| Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |
+|---|---|---|
+| `discount_column` | `None` | The column with the discount bucket (None = the first extra de revalorización whose name contains "disc") and the value that means "no discount" (None = the first bucket in sorted order). The analysis compares every bucket to that reference. |
+| `no_discount_value` | `None` |  |
+
 ## phase 2 · the seasonality benchmark (ANALYSIS)
 
 | Parámetro | Defecto | Para qué vale · por qué ese valor · qué mirar |

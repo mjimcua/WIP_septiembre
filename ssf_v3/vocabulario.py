@@ -47,6 +47,7 @@ PIPELINE_SIMULATED = "simulada"
 ORIGIN_SERIES, ORIGIN_CELL, ORIGIN_GLOBAL = "serie", "celda", "global"
 CHAMPION_ORIGIN, CHALLENGER_ORIGIN, DEFAULT_ORIGIN = "campeon", "retador", "defecto"
 BAND_OWN, BAND_FAMILY, BAND_BINOMIAL = "propia", "familia", "binomial"
+UPLIFT_VIA_CONTRACT, UPLIFT_VIA_STATISTICAL = "contrato", "estadistico"    # how a row's uplift was set
 
 # ─── risk levels ─────────────────────────────────────────────────────────────────
 LEVEL_OWN = "A_propio"

@@ -113,6 +113,7 @@ def pipeline_summary(bands: pd.DataFrame, holdout: pd.DataFrame, configuration: 
             banda_total_high_usd=round(float(np.sqrt(idio_high ** 2 + common_high ** 2)), 2),
             cota_min_usd=round(float(np.sqrt((group["cota_fila_usd"] ** 2).sum())), 2), cota_max_usd=round(float(group["cota_fila_usd"].sum()), 2),
             pct_simulado=round(100 * float(group.loc[group["simulada"] == 1, "esperado_usd"].sum()) / max(expected, 1e-9), 1),
+            pct_uplift_contrato=round(100 * float(group.loc[group["uplift_via"] == UPLIFT_VIA_CONTRACT, configuration.pipeline_usd_col].sum()) / max(float(group[configuration.pipeline_usd_col].sum()), 1e-9), 1) if "uplift_via" in group.columns else 0.0,
             pct_nivel_A=round(100 * float(group.loc[group["nivel_A"], "esperado_usd"].sum()) / max(expected, 1e-9), 1),
             error_realizado_pct=round(realized, 2) if np.isfinite(realized) else np.nan,
             error_total_realizado_pct=round(realized_total, 2) if np.isfinite(realized_total) else np.nan,
@@ -273,6 +274,7 @@ def regional_summary(bands: pd.DataFrame, series_card: pd.DataFrame, composition
             pct_nivel_S=round(100 * float(group.loc[group["nivel_S"], "esperado_usd"].sum()) / max(expected, 1e-9), 1),
             pct_senal=round(100 * float(group.loc[group["con_senal"], "esperado_usd"].sum()) / max(expected, 1e-9), 1),
             pct_simulado=round(100 * float(group.loc[group["simulada"] == 1, "esperado_usd"].sum()) / max(expected, 1e-9), 1),
+            pct_uplift_contrato=round(100 * float(group.loc[group["uplift_via"] == UPLIFT_VIA_CONTRACT, configuration.pipeline_usd_col].sum()) / max(float(group[configuration.pipeline_usd_col].sum()), 1e-9), 1) if "uplift_via" in group.columns else 0.0,
             composicion_pct=round(100 * comp_share, 1) if pd.notna(comp_share) else np.nan))
     summary = pd.DataFrame(rows)
     if len(summary):

@@ -138,6 +138,8 @@ configuration = SFFConfig(
     baseline_grains=["global", "regional_level_1+product_level_1+purchase_type", "mandatory"],
     pending_close_months=1, test_months=6,   # calendario desde el mes en curso: agosto pendiente, feb-jul examen
     benchmark_group_dims=["regional_level_1", "product_level_1"],   # el benchmark de estacionalidad: top 5 por grupo
+    discount_value_column="discount",        # el descuento exacto en tanto por 1 (0 = lista, nulo = desconocido): vía de contrato del uplift y tramos de la fase 1.5
+    price_increase_by_period={},             # subidas de lista por periodo, p. ej. {"2027-01": 1.05}
     technique_history_months=None,       # segunda ejecución: 24, y comparar el hold-out del total
 )
 results = run_analysis(configuration)
